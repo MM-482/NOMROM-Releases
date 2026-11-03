@@ -1,0 +1,7 @@
+NOMROM 1.10.3 for Windows
+
+Adds local Skraper gamelist imports with previews, platform selection, copied artwork, and clear controls.
+Keeps box covers distinct from image mixes and screenshots.
+Improves TorBox request handling and download failure diagnostics.
+Preserves the existing library, account settings, and signed-update configuration.
+ScreenScraper application authorization remains pending.
