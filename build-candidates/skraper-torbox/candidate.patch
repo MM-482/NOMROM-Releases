@@ -1,6 +1,5 @@
 diff --git a/SKRAPER-INTEGRATION.txt b/SKRAPER-INTEGRATION.txt
 new file mode 100644
-index 0000000..e787147
 --- /dev/null
 +++ b/SKRAPER-INTEGRATION.txt
 @@ -0,0 +1,156 @@
@@ -162,7 +161,6 @@ index 0000000..e787147
 +Existing NOMROM/Romgi attribution and release instructions are retained.
 diff --git a/SKRAPER-VALIDATION.txt b/SKRAPER-VALIDATION.txt
 new file mode 100644
-index 0000000..c465466
 --- /dev/null
 +++ b/SKRAPER-VALIDATION.txt
 @@ -0,0 +1,54 @@
@@ -220,9 +218,76 @@ index 0000000..c465466
 +Application Dart/native source was stable for the final full-suite/analyzer
 +and Linux entrypoint gates. Only handoff documentation, validation records,
 +and packaging metadata were added afterward.
+diff --git a/TORBOX-COMPATIBILITY.txt b/TORBOX-COMPATIBILITY.txt
+new file mode 100644
+--- /dev/null
++++ b/TORBOX-COMPATIBILITY.txt
+@@ -0,0 +1,63 @@
++NOMROM 1.10.4+25 — TorBox file metadata and remote-preparation handling
++
++This follows Windows 1.10.3+24. It retains the Skraper integration, artwork,
++account storage, download integrity, queue controls and signed-update public
++configuration. No publisher signing key or service credentials are included.
++
++Reported behavior
++- Metroid Prime / GameCube Rev 2 and Halo: Combat Evolved / Xbox Rev 2 selections
++  produced FILE_NOT_FOUND in the local TorBox file matcher.
++- Xenoblade v2080 reached remote caching, then NOMROM stopped waiting after its
++  three-minute resolution deadline with CACHING_TIMEOUT. The application did
++  not crash; the user confirmed that only the download stopped.
++
++Provider compatibility changes
++- Recognize TorBox's documented short_name when name is absent or blank.
++  A short filename cannot erase an explicitly conflicting full directory path.
++- Match literal paths first, then try decoding percent-encoded paths once.
++  Preserve literal '+' characters and ambiguous-file rejection.
++- A completed torrent with an empty files list is not evidence that the
++  requested file is absent. Retain the registration and allow another bounded
++  metadata poll instead of immediately returning permanent FILE_NOT_FOUND.
++- Continue to verify torrent hash/ID and file size. Never choose a file by its
++  array position, silently select another revision, or download a whole pack
++  as a substitute for the selected game.
++
++Remote preparation
++When the provider is still preparing at the resolution deadline and native
++torrents are disabled, retain the task using the existing persisted paused
++status. Display Waiting for debrid with a Check again action and release the
++local queue slot. Resume rechecks the original source. Pause/cancel/update
++preparation remain authoritative, and real authentication or network failures
++remain errors. No unlimited background retries or remote deletions are added.
++
++Evidence and limits
++The added provider regression fixtures use public catalog metadata and
++synthetic TorBox responses. They do not contain game data or authenticated
++responses. The delivered 1.10.3 provider fails five of the seven new fixture
++checks; the updated provider passes all seven. Additional queue and widget
++checks cover the remote-preparation flow.
++
++The public catalog identifies Halo (USA) Rev 2 and Xenoblade Chronicles 3D
++(USA) v2080 / Xenoblade (Japan) v2080. It has Metroid Prime (USA) Rev 2, but no
++Metroid Prime 2 Rev 2 entry; no source selection or catalog title was changed
++to resolve that ambiguity.
++
++Original torrent descriptors were fetched without game content. Their raw
++info-dictionary SHA-1 values match the catalog hashes. The requested paths,
++indexes and sizes match the descriptors exactly, so a stale catalog has not
++been demonstrated. The Xenoblade collection contains 124 members totaling
++19,159,807,045 bytes. The GameCube collection is approximately 1.68 TB and the
++Xbox collection 17.54 TB; those are collection sizes, not selected-game sizes.
++
++The user's live TorBox file-list representation remains unverified. A cached
++whole-collection ZIP cannot safely be treated as an individual catalog file.
++The provider corrections are bounded compatibility fixes, not proof that the
++reported Metroid/Halo account response used any particular representation.
++TorBox may need longer than NOMROM's polling window to prepare a collection;
++the app cannot make an uncached or unavailable torrent immediately ready.
++
++Validation is recorded in the separate build evidence. A Windows compile,
++package verification and native smoke run do not replace interactive installer
++or live-service acceptance. Publication still requires the existing publisher
++key and a signed feed; these source changes do not publish an in-app update.
 diff --git a/WINDOWS-CANDIDATE.txt b/WINDOWS-CANDIDATE.txt
 new file mode 100644
-index 0000000..b0f4452
 --- /dev/null
 +++ b/WINDOWS-CANDIDATE.txt
 @@ -0,0 +1,18 @@
@@ -244,11 +309,80 @@ index 0000000..b0f4452
 +
 +This preparation note does not claim a successful native build. The final
 +Windows verification report records the actual run and artifact results.
+diff --git a/lib/models/download_task.dart b/lib/models/download_task.dart
+--- a/lib/models/download_task.dart
++++ b/lib/models/download_task.dart
+@@ -195,19 +195,29 @@
+     );
+   }
+ 
++  /// A bounded debrid poll timed out while the provider was still preparing
++  /// the torrent. Keep the existing paused status and persisted error field;
++  /// only the exact resolver code marks this as a remote-preparation pause.
++  bool get waitingForDebrid =>
++      status == DownloadStatus.paused &&
++      link.isTorrent &&
++      error?.endsWith(' (CACHING_TIMEOUT)') == true;
++
+   String get statusText {
+     switch (status) {
+       case DownloadStatus.pending:
+         return 'Waiting...';
+       case DownloadStatus.downloading:
+         if (resolvingDebrid) {
+-          return progress > 0 ? 'Caching on debrid...' : 'Resolving via debrid...';
++          return progress > 0
++              ? 'Caching on debrid...'
++              : 'Resolving via debrid...';
+         }
+         if (link.isTorrent && fetchingMetadata) return 'Finding peers...';
+         if (link.isTorrent) return 'Downloading (Torrent)';
+         return 'Downloading...';
+       case DownloadStatus.paused:
+-        return 'Paused';
++        return waitingForDebrid ? 'Waiting for debrid' : 'Paused';
+       case DownloadStatus.extracting:
+         return 'Extracting...';
+       case DownloadStatus.completed:
+diff --git a/lib/screens/downloads_screen.dart b/lib/screens/downloads_screen.dart
+--- a/lib/screens/downloads_screen.dart
++++ b/lib/screens/downloads_screen.dart
+@@ -424,13 +424,28 @@
+             : const Icon(Icons.videogame_asset),
+       ),
+       title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+-      subtitle: Text(
+-        '${PlatformNames.getDisplayName(task.platform)} • ${task.link.sizeStr}${isPaused ? ' • Paused' : ''}',
++      subtitle: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(
++            '${PlatformNames.getDisplayName(task.platform)} • ${task.link.sizeStr}${isPaused ? ' • ${task.statusText}' : ''}',
++          ),
++          if (task.waitingForDebrid)
++            const Text(
++              'The debrid service is still preparing this torrent. Check its dashboard, then check again.',
++            ),
++        ],
+       ),
+       trailing: Row(
+         mainAxisSize: MainAxisSize.min,
+         children: [
+-          if (isPaused)
++          if (task.waitingForDebrid)
++            TextButton.icon(
++              icon: const Icon(Icons.refresh),
++              label: const Text('Check again'),
++              onPressed: busy ? null : () => onAction(_DownloadAction.resume),
++            )
++          else if (isPaused)
+             IconButton(
+               icon: const Icon(Icons.play_arrow),
+               tooltip: 'Resume',
 diff --git a/lib/screens/settings_screen.dart b/lib/screens/settings_screen.dart
-index c113117..4b4e02f 100644
 --- a/lib/screens/settings_screen.dart
 +++ b/lib/screens/settings_screen.dart
-@@ -11,6 +11,7 @@ import '../theme/romgi_themes.dart';
+@@ -11,6 +11,7 @@
  import '../widgets/app_design_selector.dart';
  import '../widgets/debrid_settings_section.dart';
  import '../widgets/metadata_provider_tile.dart';
@@ -256,7 +390,7 @@ index c113117..4b4e02f 100644
  import '../widgets/windows_update_tile.dart';
  import '../widgets/mac_navigation_sidebar.dart';
  import '../services/rom_database_service.dart';
-@@ -1138,22 +1139,25 @@ class _MetadataSection extends ConsumerWidget {
+@@ -1138,22 +1139,25 @@
                ref.read(settingsProvider.notifier).setMetadataEnabled(value),
          ),
          if (settings.metadataEnabled)
@@ -299,10 +433,9 @@ index c113117..4b4e02f 100644
      );
    }
 diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debrid_provider.dart
-index 3987dc1..bac6ae2 100644
 --- a/lib/services/debrid/debrid_provider.dart
 +++ b/lib/services/debrid/debrid_provider.dart
-@@ -46,6 +46,7 @@ class DebridCaching extends DebridResult {
+@@ -46,6 +46,7 @@
  
    const DebridCaching({this.progress, this.retryAfter});
  }
@@ -310,7 +443,7 @@ index 3987dc1..bac6ae2 100644
  class DebridNotCached extends DebridResult {
    const DebridNotCached();
  }
-@@ -55,6 +56,9 @@ class DebridError extends DebridResult {
+@@ -55,6 +56,9 @@
    final bool authError;
    final bool rateLimited;
  
@@ -320,7 +453,7 @@ index 3987dc1..bac6ae2 100644
    /// Retrying cannot help — the poll loop aborts instead of spinning.
    final bool permanent;
  
-@@ -63,7 +67,10 @@ class DebridError extends DebridResult {
+@@ -63,7 +67,10 @@
      this.authError = false,
      this.rateLimited = false,
      this.permanent = false,
@@ -332,7 +465,6 @@ index 3987dc1..bac6ae2 100644
  
  abstract class DebridProvider {
 diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torbox_provider.dart
-index ab2370f..bd48da1 100644
 --- a/lib/services/debrid/torbox_provider.dart
 +++ b/lib/services/debrid/torbox_provider.dart
 @@ -1,14 +1,15 @@
@@ -356,7 +488,7 @@ index ab2370f..bd48da1 100644
  class TorboxProvider implements DebridProvider {
    TorboxProvider({Dio? dio})
      : _dio =
-@@ -18,12 +19,17 @@ class TorboxProvider implements DebridProvider {
+@@ -18,12 +19,17 @@
                baseUrl: 'https://api.torbox.app/v1/api',
                connectTimeout: const Duration(seconds: 10),
                receiveTimeout: const Duration(seconds: 30),
@@ -375,7 +507,7 @@ index ab2370f..bd48da1 100644
  
    @override
    DebridProviderInfo get info => const DebridProviderInfo(
-@@ -38,7 +44,6 @@ class TorboxProvider implements DebridProvider {
+@@ -38,7 +44,6 @@
  
    Options _auth(String apiKey) => Options(
      headers: {'Authorization': 'Bearer ${apiKey.trim()}'},
@@ -383,7 +515,7 @@ index ab2370f..bd48da1 100644
      validateStatus: (code) => code != null && code >= 200 && code < 600,
    );
  
-@@ -47,30 +52,19 @@ class TorboxProvider implements DebridProvider {
+@@ -47,30 +52,19 @@
      if (!isConfigured(apiKey)) return 'Enter your TorBox API key';
      try {
        final res = await _dio.get('/user/me', options: _auth(apiKey));
@@ -418,7 +550,7 @@ index ab2370f..bd48da1 100644
      } catch (_) {
        return 'TorBox returned an unexpected response. Try again.';
      }
-@@ -81,158 +75,349 @@ class TorboxProvider implements DebridProvider {
+@@ -81,158 +75,380 @@
      DebridFileRequest req, {
      required String apiKey,
    }) async {
@@ -466,29 +598,37 @@ index ab2370f..bd48da1 100644
          return const DebridCaching();
        }
 -      torrentId ??= _asInt(torrent['id']);
+-
+-      final present = torrent['download_present'] == true;
+-      final finished = torrent['download_finished'] == true;
 +      final torrentId = _asInt(torrent['id'])!; // identity checked below
 +      known.id = torrentId;
 +      known.seenInList = true;
 +      _remember(key, known);
- 
--      final present = torrent['download_present'] == true;
--      final finished = torrent['download_finished'] == true;
++
        final progress = _asDouble(torrent['progress']);
 -
 -      if (!(present && finished) || torrentId == null) {
 -        return DebridCaching(progress: progress);
-+      if (torrent['download_present'] != true ||
-+          torrent['download_finished'] != true) {
-+        return DebridCaching(progress: progress?.clamp(0.0, 1.0));
-       }
- 
+-      }
+-
 -      // 3. Ready — pick the file and request a direct link.
 -      final files = (torrent['files'] as List?) ?? const [];
 -      final fileId = _pickFileId(files, req);
 -      if (fileId == null) return const DebridNotCached();
 -
++      if (torrent['download_present'] != true ||
++          torrent['download_finished'] != true) {
++        return DebridCaching(progress: progress?.clamp(0.0, 1.0));
++      }
++
 +      final rawFiles = torrent['files'];
 +      if (rawFiles is! List) throw _TorboxRequestFailure(_unexpectedResponse());
++      // Completion flags may arrive before the file metadata is populated.
++      // There is no evidence of a missing selection until a list exists.
++      if (rawFiles.isEmpty) {
++        return DebridCaching(progress: progress?.clamp(0.0, 1.0));
++      }
 +      final selected = _pickFile(rawFiles, req);
 +      final fileId = _asInt(selected['id']);
 +      if (fileId == null || fileId < 0) {
@@ -512,6 +652,18 @@ index ab2370f..bd48da1 100644
 -      final url = _data(dl);
 -      if (url is String && url.isNotEmpty) {
 -        return DebridReady(url);
+-      }
+-      return const DebridError('TorBox did not return a download link');
+-    } on _TorboxRequestFailure catch (error) {
+-      return error.error;
+-    } on DioException catch (e) {
+-      return DebridError(e.message ?? 'TorBox request failed');
+-    } catch (e) {
+-      return DebridError('TorBox error: $e');
+-    }
+-  }
+-
+-  Future<Map<String, dynamic>?> _torrentById(int id, String apiKey) async {
 +      final dlError = _responseError(dl);
 +      if (dlError != null) throw _TorboxRequestFailure(dlError);
 +      final value = _data(dl);
@@ -524,19 +676,10 @@ index ab2370f..bd48da1 100644
 +          'TorBox did not return a valid download link. Try again later.',
 +          code: 'INVALID_DOWNLOAD_LINK',
 +        );
-       }
--      return const DebridError('TorBox did not return a download link');
--    } on _TorboxRequestFailure catch (error) {
--      return error.error;
--    } on DioException catch (e) {
--      return DebridError(e.message ?? 'TorBox request failed');
--    } catch (e) {
--      return DebridError('TorBox error: $e');
++      }
 +      return DebridReady(
 +        value as String,
-+        filename: selected['name'] is String
-+            ? selected['name'] as String
-+            : null,
++        filename: _providerFileName(selected),
 +        size: _asInt(selected['size']),
 +      );
 +    } on _TorboxRequestFailure catch (failure) {
@@ -558,10 +701,9 @@ index ab2370f..bd48da1 100644
 +      return _transportError(error);
 +    } catch (_) {
 +      return _unexpectedResponse();
-     }
-   }
- 
--  Future<Map<String, dynamic>?> _torrentById(int id, String apiKey) async {
++    }
++  }
++
 +  Future<_KnownTorrent> _registration(
 +    DebridFileRequest req,
 +    _TorrentKey key,
@@ -644,6 +786,8 @@ index ab2370f..bd48da1 100644
 -    if (data is Map<String, dynamic>) return data;
 -    if (data is List && data.isNotEmpty) {
 -      return data.first as Map<String, dynamic>;
+-    }
+-    return null;
 +    if (data == null || (data is List && data.isEmpty)) return null;
 +    Map<String, dynamic>? torrent;
 +    if (data is Map<String, dynamic>) {
@@ -657,8 +801,7 @@ index ab2370f..bd48da1 100644
 +        throw const _TorboxRequestFailure(_identityMismatch);
 +      }
 +      torrent = matches.single;
-     }
--    return null;
++    }
 +    if (torrent == null) throw _TorboxRequestFailure(_unexpectedResponse());
 +    _validateIdentity(torrent, key.infohash, expectedId: id);
 +    return torrent;
@@ -700,6 +843,42 @@ index ab2370f..bd48da1 100644
 -  /// whose size grossly mismatches the expected size.
 -  Object? _pickFileId(List<dynamic> files, DebridFileRequest req) {
 -    if (files.isEmpty) return null;
+-
+-    Map? byName;
+-    if (req.filePath != null && req.filePath!.isNotEmpty) {
+-      final target = p.basename(req.filePath!).toLowerCase();
+-      for (final f in files) {
+-        if (f is Map) {
+-          final name = (f['name'] as String?)?.toLowerCase() ?? '';
+-          if (name == target || name.endsWith('/$target')) {
+-            byName = f;
+-            break;
+-          }
+-        }
+-      }
+-    }
+-
+-    final chosen =
+-        byName ??
+-        (req.fileIndex >= 0 && req.fileIndex < files.length
+-            ? files[req.fileIndex] as Map?
+-            : null) ??
+-        (files.length == 1 ? files.first as Map? : null);
+-    if (chosen == null) return null;
+-
+-    if (req.expectedSize > 0) {
+-      final size = _asInt(chosen['size']) ?? 0;
+-      if (size > 0 && !_sizesClose(size, req.expectedSize)) return null;
+-    }
+-    return chosen['id'];
+-  }
+-}
+-
+-// -- shared parsing helpers --------------------------------------------------
+-
+-Object? _data(Response res) {
+-  final body = res.data;
+-  if (body is Map<String, dynamic>) return body['data'];
 +  void _validateIdentity(
 +    Map<String, dynamic> torrent,
 +    String hash, {
@@ -715,47 +894,20 @@ index ab2370f..bd48da1 100644
 +      throw const _TorboxRequestFailure(_identityMismatch);
 +    }
 +  }
- 
--    Map? byName;
--    if (req.filePath != null && req.filePath!.isNotEmpty) {
--      final target = p.basename(req.filePath!).toLowerCase();
--      for (final f in files) {
--        if (f is Map) {
--          final name = (f['name'] as String?)?.toLowerCase() ?? '';
--          if (name == target || name.endsWith('/$target')) {
--            byName = f;
--            break;
--          }
--        }
++
 +  /// Compare paths before basenames. Provider arrays may not use the catalog's
 +  /// ordering; an explicit mismatch must never download an unrelated game.
 +  Map<String, dynamic> _pickFile(List<dynamic> files, DebridFileRequest req) {
 +    final available = files.whereType<Map<String, dynamic>>().toList();
 +    if (available.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
-+    final target = _normalPath(req.filePath ?? '');
++    final target = req.filePath ?? '';
 +    List<Map<String, dynamic>> candidates;
-+    if (target.isNotEmpty) {
-+      candidates = available
-+          .where((file) => _filePath(file) == target)
-+          .toList();
++    if (_normalPath(target).isNotEmpty) {
++      candidates = _pathCandidates(available, target);
 +      if (candidates.isEmpty) {
-+        candidates = available.where((file) {
-+          final path = _filePath(file);
-+          // Ignore an added/removed torrent root, while retaining a folder
-+          // component so two disc1.bin files in different games stay distinct.
-+          return path.contains('/') &&
-+              target.contains('/') &&
-+              (path.endsWith('/$target') || target.endsWith('/$path'));
-+        }).toList();
-       }
-+      if (candidates.isEmpty) {
-+        candidates = available.where((file) {
-+          final path = _filePath(file);
-+          // A basename-only API entry can still identify a unique file, but
-+          // two explicit, conflicting directory paths cannot identify each other.
-+          return (!path.contains('/') || !target.contains('/')) &&
-+              p.posix.basename(path) == p.posix.basename(target);
-+        }).toList();
++        // Some provider responses encode path components. Keep literal names
++        // authoritative, then try decoding once; '+' is a filename character.
++        candidates = _pathCandidates(available, target, decode: true);
 +      }
 +      if (candidates.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
 +    } else if (available.length == 1) {
@@ -769,19 +921,7 @@ index ab2370f..bd48da1 100644
 +                .toList()
 +          : <Map<String, dynamic>>[];
 +      if (candidates.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
-     }
--
--    final chosen =
--        byName ??
--        (req.fileIndex >= 0 && req.fileIndex < files.length
--            ? files[req.fileIndex] as Map?
--            : null) ??
--        (files.length == 1 ? files.first as Map? : null);
--    if (chosen == null) return null;
--
--    if (req.expectedSize > 0) {
--      final size = _asInt(chosen['size']) ?? 0;
--      if (size > 0 && !_sizesClose(size, req.expectedSize)) return null;
++    }
 +    if (candidates.length > 1 && req.expectedSize > 0) {
 +      final exactSize = candidates
 +          .where((file) => _asInt(file['size']) == req.expectedSize)
@@ -798,29 +938,20 @@ index ab2370f..bd48da1 100644
 +        size > 0 &&
 +        !_sizesClose(size, req.expectedSize)) {
 +      throw const _TorboxRequestFailure(_fileSizeMismatch);
-     }
--    return chosen['id'];
++    }
 +    return chosen;
-   }
- }
- 
--// -- shared parsing helpers --------------------------------------------------
++  }
++}
++
 +typedef _TorrentKey = ({String accountFingerprint, String infohash});
- 
--Object? _data(Response res) {
--  final body = res.data;
--  if (body is Map<String, dynamic>) return body['data'];
--  return null;
++
 +class _KnownTorrent {
 +  _KnownTorrent(this.id);
 +  int? id;
 +  bool seenInList = false;
 +  DateTime lastUsed = DateTime.now();
- }
- 
--// AUTH_ERROR is a server-side verification failure; BAD_TOKEN/NO_AUTH are
--// actual credential failures. TorBox asks clients to retry AUTH_ERROR later.
--const _authErrorCodes = {'BAD_TOKEN', 'OAUTH_VERIFICATION_ERROR', 'NO_AUTH'};
++}
++
 +class _TorboxRequestFailure implements Exception {
 +  const _TorboxRequestFailure(this.error);
 +  final DebridError error;
@@ -832,7 +963,7 @@ index ab2370f..bd48da1 100644
 +  permanent: true,
 +);
 +const _fileNotFound = DebridError(
-+  'The selected file was not found in this TorBox torrent. Refresh the source list or choose another source.',
++  'NOMROM could not match the selected game to an individual file in TorBox. Check the torrent file list in TorBox or choose another source.',
 +  code: 'FILE_NOT_FOUND',
 +  permanent: true,
 +);
@@ -847,9 +978,55 @@ index ab2370f..bd48da1 100644
 +  permanent: true,
 +);
 +
-+String _filePath(Map<String, dynamic> file) =>
-+    _normalPath(file['name'] is String ? file['name'] as String : '');
-+String _normalPath(String value) {
++String? _providerFileName(Map<String, dynamic> file) {
++  // Both fields are optional in TorBox's published response schema. A short
++  // name is useful when name is absent, but must not erase a conflicting path.
++  for (final field in ['name', 'short_name']) {
++    final value = file[field];
++    if (value is String && value.trim().isNotEmpty) return value;
++  }
+   return null;
+ }
+ 
+-// AUTH_ERROR is a server-side verification failure; BAD_TOKEN/NO_AUTH are
+-// actual credential failures. TorBox asks clients to retry AUTH_ERROR later.
++List<Map<String, dynamic>> _pathCandidates(
++  List<Map<String, dynamic>> files,
++  String requested, {
++  bool decode = false,
++}) {
++  final target = _normalPath(requested, decode: decode);
++  String pathOf(Map<String, dynamic> file) =>
++      _normalPath(_providerFileName(file) ?? '', decode: decode);
++  var candidates = files.where((file) => pathOf(file) == target).toList();
++  if (candidates.isEmpty) {
++    candidates = files.where((file) {
++      final path = pathOf(file);
++      // Ignore an added/removed root while preserving game subdirectories.
++      return path.contains('/') &&
++          target.contains('/') &&
++          (path.endsWith('/$target') || target.endsWith('/$path'));
++    }).toList();
++  }
++  if (candidates.isEmpty) {
++    candidates = files.where((file) {
++      final path = pathOf(file);
++      return path.isNotEmpty &&
++          (!path.contains('/') || !target.contains('/')) &&
++          p.posix.basename(path) == p.posix.basename(target);
++    }).toList();
++  }
++  return candidates;
++}
++
++String _normalPath(String value, {bool decode = false}) {
++  if (decode) {
++    try {
++      value = Uri.decodeComponent(value);
++    } on FormatException {
++      // A literal '%' or invalid escape remains an ordinary filename.
++    }
++  }
 +  final normalized = value.trim().replaceAll('\\', '/');
 +  if (normalized.isEmpty) return '';
 +  return p.posix
@@ -860,12 +1037,13 @@ index ab2370f..bd48da1 100644
 +
 +Object? _data(Response res) =>
 +    res.data is Map ? (res.data as Map)['data'] : null;
- 
-+const _authErrorCodes = {'BAD_TOKEN', 'OAUTH_VERIFICATION_ERROR', 'NO_AUTH'};
++
+ const _authErrorCodes = {'BAD_TOKEN', 'OAUTH_VERIFICATION_ERROR', 'NO_AUTH'};
+-
  const _permanentErrorCodes = {
    'ACTIVE_LIMIT',
    'MONTHLY_LIMIT',
-@@ -240,65 +425,149 @@ const _permanentErrorCodes = {
+@@ -240,65 +456,149 @@
    'DOWNLOAD_TOO_LARGE',
    'INVALID_MAGNET',
    'INVALID_TORRENT',
@@ -882,24 +1060,6 @@ index ab2370f..bd48da1 100644
  
 -/// TorBox reports failures as `success: false` even on HTTP 200.
 -DebridError? _envelopeError(Response res) {
--  final body = res.data;
--  if (body is! Map || body['success'] != false) return null;
--  final code = body['error'] is String ? body['error'] as String : '';
--  final detail = body['detail'] is String ? body['detail'] as String : '';
--  final message = detail.isNotEmpty
--      ? detail
--      : (code.isNotEmpty ? code : 'request failed');
--  return DebridError(
--    'TorBox: $message',
--    authError: _authErrorCodes.contains(code),
--    permanent: _permanentErrorCodes.contains(code),
--  );
--}
--
--class _TorboxRequestFailure implements Exception {
--  final DebridError error;
--  const _TorboxRequestFailure(this.error);
--}
 +// Do not reflect raw response detail: proxies/provider failures may contain a
 +// token-bearing request URL. Known API codes have safe, actionable messages.
 +const _errorMessages = <String, String>{
@@ -940,18 +1100,34 @@ index ab2370f..bd48da1 100644
 +  'INVALID_OPTION':
 +      'TorBox rejected a torrent request option. Refresh the source list and try again.',
 +};
- 
- DebridError? _responseError(Response res) {
++
++DebridError? _responseError(Response res) {
++  final status = res.statusCode ?? 0;
+   final body = res.data;
+-  if (body is! Map || body['success'] != false) return null;
+-  final code = body['error'] is String ? body['error'] as String : '';
+-  final detail = body['detail'] is String ? body['detail'] as String : '';
+-  final message = detail.isNotEmpty
+-      ? detail
+-      : (code.isNotEmpty ? code : 'request failed');
+-  return DebridError(
+-    'TorBox: $message',
+-    authError: _authErrorCodes.contains(code),
+-    permanent: _permanentErrorCodes.contains(code),
+-  );
+-}
+-
+-class _TorboxRequestFailure implements Exception {
+-  final DebridError error;
+-  const _TorboxRequestFailure(this.error);
+-}
+-
+-DebridError? _responseError(Response res) {
 -  final statusError = _authError(res);
 -  if (statusError != null) return statusError;
 -  final envelopeError = _envelopeError(res);
 -  if (envelopeError != null) return envelopeError;
-   final status = res.statusCode ?? 0;
--  if (status < 200 || status >= 300) {
--    return DebridError('TorBox returned HTTP $status. Try again later.');
--  }
-   final body = res.data;
--  if (body is! Map || body['success'] != true) {
+-  final status = res.statusCode ?? 0;
 +  final rawCode = body is Map && body['error'] is String
 +      ? body['error'] as String
 +      : null;
@@ -959,13 +1135,12 @@ index ab2370f..bd48da1 100644
 +      ? rawCode
 +      : null;
 +  if (status == 429) {
-     return const DebridError(
--      'TorBox returned an unexpected response. Try again.',
++    return const DebridError(
 +      'TorBox: Rate limited. Wait briefly and try again.',
 +      code: 'RATE_LIMITED',
 +      rateLimited: true,
-     );
-   }
++    );
++  }
 +  if (status == 401 ||
 +      status == 403 ||
 +      (code != null && _authErrorCodes.contains(code))) {
@@ -995,7 +1170,15 @@ index ab2370f..bd48da1 100644
 +      code: 'ITEM_NOT_FOUND',
 +    );
 +  }
-+  if (status < 200 || status >= 300) {
+   if (status < 200 || status >= 300) {
+-    return DebridError('TorBox returned HTTP $status. Try again later.');
+-  }
+-  final body = res.data;
+-  if (body is! Map || body['success'] != true) {
+-    return const DebridError(
+-      'TorBox returned an unexpected response. Try again.',
+-    );
+-  }
 +    return DebridError(
 +      'TorBox returned HTTP $status. Try again later.',
 +      code: 'HTTP_$status',
@@ -1008,6 +1191,9 @@ index ab2370f..bd48da1 100644
 -DebridError? _authError(Response res) {
 -  if (res.statusCode == 401 || res.statusCode == 403) {
 -    return const DebridError('Invalid or expired API key', authError: true);
+-  }
+-  if (res.statusCode == 429) {
+-    return const DebridError('Rate limited', rateLimited: true);
 +DebridError _unexpectedResponse() => const DebridError(
 +  'TorBox returned an unexpected response. Try again later.',
 +  code: 'INVALID_RESPONSE',
@@ -1035,9 +1221,7 @@ index ab2370f..bd48da1 100644
 +  if (value is int) return value;
 +  if (value is double && value.isFinite && value == value.truncateToDouble()) {
 +    return value.toInt();
-   }
--  if (res.statusCode == 429) {
--    return const DebridError('Rate limited', rateLimited: true);
++  }
 +  if (value is String && RegExp(r'^\d+$').hasMatch(value)) {
 +    return int.tryParse(value);
    }
@@ -1058,10 +1242,9 @@ index ab2370f..bd48da1 100644
 +    (actual - expected).abs() <=
 +    ((actual > expected ? actual : expected) * 0.05).ceil();
 diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
-index 9548a58..a7157b1 100644
 --- a/lib/services/debrid_service.dart
 +++ b/lib/services/debrid_service.dart
-@@ -180,61 +180,205 @@ class DebridService {
+@@ -180,61 +180,205 @@
    Future<DownloadLink?> resolveTorrentLink(
      DownloadLink link, {
      void Function(DebridCaching status)? onCaching,
@@ -1223,10 +1406,11 @@ index 9548a58..a7157b1 100644
 -            error.rateLimited ? const Duration(seconds: 10) : delay,
 -          );
 -          delay = _nextDelay(delay, maxDelay);
+-      }
 +          lastError = error;
 +          if (error.authError || error.permanent) return fail(error);
 +          wait = error.rateLimited ? const Duration(seconds: 10) : delay;
-       }
++      }
 +      if (cancelled()) return null;
 +      final available = deadline.difference(DateTime.now());
 +      if (available <= Duration.zero) return fail(timeoutFailure());
@@ -1287,10 +1471,9 @@ index 9548a58..a7157b1 100644
    }
  
 diff --git a/lib/services/download_service.dart b/lib/services/download_service.dart
-index c3d97c6..adb55ca 100644
 --- a/lib/services/download_service.dart
 +++ b/lib/services/download_service.dart
-@@ -14,6 +14,7 @@ import '../models/models.dart';
+@@ -14,6 +14,7 @@
  import '../torrent/torrent_api.g.dart';
  import 'database_service.dart';
  import 'debrid_service.dart';
@@ -1298,7 +1481,7 @@ index c3d97c6..adb55ca 100644
  import 'host_adapter.dart';
  import 'internet_archive_auth_manager.dart';
  import 'link_resolver.dart';
-@@ -845,12 +846,36 @@ class DownloadService {
+@@ -845,12 +846,37 @@
        final prefs = getLinkResolverPrefs();
        final debrid = _debrid;
        if (prefs.debridEnabled && debrid != null) {
@@ -1322,7 +1505,8 @@ index c3d97c6..adb55ca 100644
 +        }
 +        if (_disposed ||
 +            _preparingAppUpdate ||
-+            _pausedTaskIds.contains(task.id)) {
++            _pausedTaskIds.contains(task.id) ||
++            !_activeTasks.containsKey(task.id)) {
 +          return;
 +        }
          if (configured) {
@@ -1339,8 +1523,20 @@ index c3d97c6..adb55ca 100644
                _pausedTaskIds.contains(task.id) ||
                !_activeTasks.containsKey(task.id)) {
              return;
-@@ -864,7 +889,8 @@ class DownloadService {
+@@ -860,11 +886,19 @@
+             await _startDownload(resolved);
+             return;
+           }
+-          // Attempted but not resolved. If P2P is off there's nowhere to go.
++          // A bounded poll can end while the provider continues preparing the
++          // torrent. With P2P off, retain the selection for an explicit recheck.
            if (prefs.torrentsDisabled) {
++            if (resolutionFailure?.code == 'CACHING_TIMEOUT' &&
++                resolutionFailure?.authError == false &&
++                resolutionFailure?.permanent == false) {
++              await _pauseForDebrid(task);
++              return;
++            }
              await _failTask(
                task,
 -              'Not cached on debrid and torrents are disabled',
@@ -1349,37 +1545,98 @@ index c3d97c6..adb55ca 100644
              );
              return;
            }
-@@ -1377,7 +1403,10 @@ class DownloadService {
+@@ -1377,13 +1411,29 @@
    /// Try to turn a torrent [task] into an HTTP download via the configured
    /// debrid provider. Shows "Resolving/Caching on debrid…" while polling.
    /// Returns null to fall back to P2P, or to abort after cancel/pause.
 -  Future<DownloadTask?> _tryResolveViaDebrid(DownloadTask task) async {
+-    if (_preparingAppUpdate || _pausedTaskIds.contains(task.id)) return null;
 +  Future<DownloadTask?> _tryResolveViaDebrid(
 +    DownloadTask task, {
 +    void Function(DebridError failure)? onFailure,
 +  }) async {
-     if (_preparingAppUpdate || _pausedTaskIds.contains(task.id)) return null;
++    if (_disposed ||
++        _preparingAppUpdate ||
++        _pausedTaskIds.contains(task.id) ||
++        !_activeTasks.containsKey(task.id)) {
++      return null;
++    }
      final debrid = _debrid;
      if (debrid == null) return null;
-@@ -1402,7 +1431,12 @@ class DownloadService {
+ 
+     final cancelToken = CancelToken();
+     _activeCancelTokens[task.id] = cancelToken;
++
++    bool stopped() =>
++        _disposed ||
++        _preparingAppUpdate ||
++        _pausedTaskIds.contains(task.id) ||
++        cancelToken.isCancelled ||
++        !identical(_activeCancelTokens[task.id], cancelToken) ||
++        !_activeTasks.containsKey(task.id);
+ 
+     final working = task.copyWith(
+       status: DownloadStatus.downloading,
+@@ -1398,13 +1448,16 @@
+     }
+     _emit(working);
+     await _startForegroundTask(task.title);
++    if (stopped()) return null;
+ 
      final httpLink = await debrid.resolveTorrentLink(
        task.link,
-       isCancelled: () =>
+-      isCancelled: () =>
 -          cancelToken.isCancelled || !_activeTasks.containsKey(task.id),
-+          _disposed ||
-+          _preparingAppUpdate ||
-+          _pausedTaskIds.contains(task.id) ||
-+          cancelToken.isCancelled ||
-+          !_activeTasks.containsKey(task.id),
-+      onFailure: onFailure,
++      isCancelled: stopped,
++      onFailure: (failure) {
++        if (!stopped()) onFailure?.call(failure);
++      },
        onCaching: (status) {
-         if (_preparingAppUpdate || _pausedTaskIds.contains(task.id)) return;
+-        if (_preparingAppUpdate || _pausedTaskIds.contains(task.id)) return;
++        if (stopped()) return;
          final current = _activeTasks[task.id];
+         if (current == null) return;
+         final updated = current.copyWith(
+@@ -1487,6 +1540,35 @@
+     _emit(updatedTask);
+     await _notifications.updateForTask(updatedTask);
+     await _maybeWritePlaylist(updatedTask);
++  }
++
++  Future<void> _pauseForDebrid(DownloadTask task) async {
++    final current = _activeTasks[task.id];
++    if (_disposed ||
++        _preparingAppUpdate ||
++        _pausedTaskIds.contains(task.id) ||
++        current == null) {
++      return;
++    }
++    final paused = current.copyWith(
++      status: DownloadStatus.paused,
++      bytesPerSecond: 0,
++      resolvingDebrid: false,
++      fetchingMetadata: false,
++      error:
++          'The debrid service is still preparing this torrent. Check its dashboard, then choose Check again. (CACHING_TIMEOUT)',
++    );
++    // This is a local pause only: preserve the original source and the remote
++    // torrent. A user recheck gets another bounded poll through resumeDownload.
++    _pausedTaskIds.add(task.id);
++    _activeTasks.remove(task.id);
++    _activeCancelTokens.remove(task.id)?.cancel('Waiting for debrid');
++    await _saveDownload(paused);
++    // A concurrent cancellation can remove the row while its write settles.
++    if (_disposed || !_pausedTaskIds.contains(task.id)) return;
++    _emit(paused);
++    await _updateNotifications();
++    unawaited(_processQueue());
+   }
+ 
+   Future<void> _failTask(DownloadTask task, String error) async {
 diff --git a/lib/services/game_artwork_cache.dart b/lib/services/game_artwork_cache.dart
-index 0287f5d..92fba35 100644
 --- a/lib/services/game_artwork_cache.dart
 +++ b/lib/services/game_artwork_cache.dart
-@@ -1,11 +1,13 @@
+@@ -1,10 +1,12 @@
  import 'dart:async';
 -import 'dart:io' show HttpClient;
 +import 'dart:io' as io;
@@ -1388,13 +1645,12 @@ index 0287f5d..92fba35 100644
  import 'package:flutter_cache_manager/flutter_cache_manager.dart';
  import 'package:http/http.dart' as http;
  import 'package:http/io_client.dart';
- 
-+import 'skraper/skraper_import_service.dart';
 +
++import 'skraper/skraper_import_service.dart';
+ 
  /// Keep artwork across catalog sessions and keep dead image hosts from holding
  /// every network slot while the user scrolls to different games.
- class GameArtworkCache {
-@@ -204,6 +206,7 @@ class FocusedArtworkCache extends ArtworkCacheManager {
+@@ -204,6 +206,7 @@
  class ArtworkFileService extends FileService {
    final Duration timeout;
    final http.Client _client;
@@ -1402,7 +1658,7 @@ index 0287f5d..92fba35 100644
    final _interests = <String, _ArtworkInterest>{};
  
    _ArtworkInterest _retain(String url) {
-@@ -234,10 +237,12 @@ class ArtworkFileService extends FileService {
+@@ -234,10 +237,12 @@
      http.Client? client,
      this.timeout = const Duration(seconds: 8),
      int concurrentFetches = 8,
@@ -1417,10 +1673,11 @@ index 0287f5d..92fba35 100644
                 ..connectionTimeout = const Duration(seconds: 5)
                 ..idleTimeout = const Duration(seconds: 30)
                 ..maxConnectionsPerHost = concurrentFetches
-@@ -255,6 +260,18 @@ class ArtworkFileService extends FileService {
+@@ -254,6 +259,18 @@
+     final interest = _interests[url];
      if (interest != null && interest.active == 0) {
        throw http.RequestAbortedException(Uri.parse(url));
-     }
++    }
 +    final uri = Uri.parse(url);
 +    if (uri.scheme == 'nomrom-skraper') {
 +      final file = await _localArtwork(url);
@@ -1432,11 +1689,10 @@ index 0287f5d..92fba35 100644
 +        );
 +      }
 +      return _ImportedArtworkResponse(file, await file.length(), uri);
-+    }
+     }
      final abort = Completer<void>();
      void cancel() {
-       if (!abort.isCompleted) abort.complete();
-@@ -309,6 +326,27 @@ class ArtworkFileService extends FileService {
+@@ -309,6 +326,27 @@
    }
  }
  
@@ -1465,10 +1721,9 @@ index 0287f5d..92fba35 100644
    _ArtworkInterest(this.url);
    final String url;
 diff --git a/lib/services/game_metadata_service.dart b/lib/services/game_metadata_service.dart
-index c8b2f8f..a533f1b 100644
 --- a/lib/services/game_metadata_service.dart
 +++ b/lib/services/game_metadata_service.dart
-@@ -10,6 +10,11 @@ import 'metadata/metadata_provider.dart';
+@@ -10,6 +10,11 @@
  import 'metadata/metadata_registry.dart';
  import 'metadata/metadata_title.dart';
  import 'metadata/metadata_lookup_queue.dart';
@@ -1480,7 +1735,7 @@ index c8b2f8f..a533f1b 100644
  
  class GameMetadataService {
    GameMetadataService({
-@@ -18,17 +23,20 @@ class GameMetadataService {
+@@ -18,17 +23,20 @@
      FlutterSecureStorage? storage,
      Duration sourceTimeout = const Duration(seconds: 8),
      Duration refreshCooldown = const Duration(minutes: 5),
@@ -1502,7 +1757,7 @@ index c8b2f8f..a533f1b 100644
    final _updates = StreamController<String>.broadcast();
    final _memory = <String, ({GameMetadata? metadata, DateTime fetchedAt})>{};
    final _loads = <String, Future<GameMetadata?>>{};
-@@ -64,6 +72,53 @@ class GameMetadataService {
+@@ -64,6 +72,53 @@
  
    MetadataProviderRegistry get registry => _registry;
  
@@ -1556,10 +1811,12 @@ index c8b2f8f..a533f1b 100644
    Future<Map<String, String>?> _readCreds(String providerId) async {
      if (_loadedIds.contains(providerId)) return _cachedCreds[providerId];
      return _credentialLoads[providerId] ??= _loadCreds(providerId);
-@@ -294,6 +349,56 @@ class GameMetadataService {
+@@ -292,6 +347,56 @@
+   }
+ 
    Future<GameMetadata?> _getMetadata(
-     RomEntry entry, {
-     bool background = false,
++    RomEntry entry, {
++    bool background = false,
 +  }) async {
 +    if (_disposed) return null;
 +    final key = cacheKeyFor(entry);
@@ -1608,16 +1865,13 @@ index c8b2f8f..a533f1b 100644
 +  }
 +
 +  Future<GameMetadata?> _getRemoteMetadata(
-+    RomEntry entry, {
-+    bool background = false,
+     RomEntry entry, {
+     bool background = false,
    }) {
-     final title = cleanTitle(entry.displayTitle);
-     if (title.isEmpty || _disposed) return Future.value(null);
 diff --git a/lib/services/metadata/screenscraper_provider.dart b/lib/services/metadata/screenscraper_provider.dart
-index f275acb..37a7277 100644
 --- a/lib/services/metadata/screenscraper_provider.dart
 +++ b/lib/services/metadata/screenscraper_provider.dart
-@@ -6,6 +6,8 @@ import 'package:dio/dio.dart';
+@@ -6,6 +6,8 @@
  import 'metadata_provider.dart';
  import 'screenscraper_systems.dart';
  import 'metadata_title.dart';
@@ -1626,7 +1880,7 @@ index f275acb..37a7277 100644
  
  // ScreenScraper returns errors as HTTP 200 plain text, not JSON.
  class ScreenScraperProvider extends GameMetadataProvider {
-@@ -169,19 +171,7 @@ class ScreenScraperProvider extends GameMetadataProvider {
+@@ -169,19 +171,7 @@
  
        final jeu = _bestMatch(jeux, title, systemId);
        if (jeu == null) return const MetadataNoMatch();
@@ -1647,10 +1901,11 @@ index f275acb..37a7277 100644
      } on _ScreenScraperRequestFailure catch (error) {
        return error.result;
      } on TimeoutException {
-@@ -195,6 +185,130 @@ class ScreenScraperProvider extends GameMetadataProvider {
+@@ -194,6 +184,130 @@
+       );
      }
    }
- 
++
 +  /// Skraper's ROM-identification endpoint, using NOMROM's own issued access.
 +  /// This sends a filename, size and checksums; it does not upload ROM bytes.
 +  /// A filename-only suggestion is never presented as a verified hash match.
@@ -1774,11 +2029,10 @@ index f275acb..37a7277 100644
 +        sourceName: 'ScreenScraper',
 +        sourceUrl: 'https://www.screenscraper.fr/',
 +      );
-+
+ 
    _AccountLimits _accountLimits(Map<String, String> creds) {
      final auth = _authParams(creds);
-     final key = (
-@@ -350,7 +464,9 @@ class ScreenScraperProvider extends GameMetadataProvider {
+@@ -350,7 +464,9 @@
          creds,
          confirmAccount: path == '/ssuserInfos.php',
        );
@@ -1791,7 +2045,6 @@ index f275acb..37a7277 100644
      // Basic accounts permit one request at a time. Retain the actual work as
 diff --git a/lib/services/skraper/rom_identity_service.dart b/lib/services/skraper/rom_identity_service.dart
 new file mode 100644
-index 0000000..b8e4df7
 --- /dev/null
 +++ b/lib/services/skraper/rom_identity_service.dart
 @@ -0,0 +1,138 @@
@@ -1935,7 +2188,6 @@ index 0000000..b8e4df7
 +}
 diff --git a/lib/services/skraper/rom_lookup_result.dart b/lib/services/skraper/rom_lookup_result.dart
 new file mode 100644
-index 0000000..072d8e7
 --- /dev/null
 +++ b/lib/services/skraper/rom_lookup_result.dart
 @@ -0,0 +1,15 @@
@@ -1956,7 +2208,6 @@ index 0000000..072d8e7
 +}
 diff --git a/lib/services/skraper/skraper_import_service.dart b/lib/services/skraper/skraper_import_service.dart
 new file mode 100644
-index 0000000..11e8a58
 --- /dev/null
 +++ b/lib/services/skraper/skraper_import_service.dart
 @@ -0,0 +1,1254 @@
@@ -3216,7 +3467,6 @@ index 0000000..11e8a58
 +}
 diff --git a/lib/services/skraper/skraper_metadata_provider.dart b/lib/services/skraper/skraper_metadata_provider.dart
 new file mode 100644
-index 0000000..959c744
 --- /dev/null
 +++ b/lib/services/skraper/skraper_metadata_provider.dart
 @@ -0,0 +1,56 @@
@@ -3276,9 +3526,47 @@ index 0000000..959c744
 +    );
 +  }
 +}
+diff --git a/lib/widgets/desktop_download_queue.dart b/lib/widgets/desktop_download_queue.dart
+--- a/lib/widgets/desktop_download_queue.dart
++++ b/lib/widgets/desktop_download_queue.dart
+@@ -110,7 +110,7 @@
+     final paused = task.status == DownloadStatus.paused;
+     final extracting = task.status == DownloadStatus.extracting;
+     final status = paused
+-        ? 'Paused'
++        ? task.statusText
+         : task.status == DownloadStatus.pending
+         ? 'Waiting'
+         : extracting
+@@ -181,13 +181,24 @@
+           ),
+           const SizedBox(width: 3),
+           IconButton(
+-            tooltip: paused ? 'Resume ${task.title}' : 'Pause ${task.title}',
++            tooltip: task.waitingForDebrid
++                ? 'Check again: ${task.title}'
++                : paused
++                ? 'Resume ${task.title}'
++                : 'Pause ${task.title}',
+             style: IconButton.styleFrom(
+               minimumSize: const Size(30, 30),
+               padding: EdgeInsets.zero,
+               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+             ),
+-            icon: Icon(paused ? Icons.play_arrow : Icons.pause, size: 16),
++            icon: Icon(
++              task.waitingForDebrid
++                  ? Icons.refresh
++                  : paused
++                  ? Icons.play_arrow
++                  : Icons.pause,
++              size: 16,
++            ),
+             onPressed: extracting
+                 ? null
+                 : () => _action(context, ref, paused ? 'resume' : 'pause'),
 diff --git a/lib/widgets/rom_identification_dialog.dart b/lib/widgets/rom_identification_dialog.dart
 new file mode 100644
-index 0000000..db63ad7
 --- /dev/null
 +++ b/lib/widgets/rom_identification_dialog.dart
 @@ -0,0 +1,404 @@
@@ -3688,7 +3976,6 @@ index 0000000..db63ad7
 +}
 diff --git a/lib/widgets/skraper_import_backend.dart b/lib/widgets/skraper_import_backend.dart
 new file mode 100644
-index 0000000..9e63095
 --- /dev/null
 +++ b/lib/widgets/skraper_import_backend.dart
 @@ -0,0 +1,54 @@
@@ -3748,7 +4035,6 @@ index 0000000..9e63095
 +}
 diff --git a/lib/widgets/skraper_import_dialog.dart b/lib/widgets/skraper_import_dialog.dart
 new file mode 100644
-index 0000000..f717788
 --- /dev/null
 +++ b/lib/widgets/skraper_import_dialog.dart
 @@ -0,0 +1,366 @@
@@ -4120,7 +4406,6 @@ index 0000000..f717788
 +}
 diff --git a/lib/widgets/skraper_integration_tile.dart b/lib/widgets/skraper_integration_tile.dart
 new file mode 100644
-index 0000000..1b03818
 --- /dev/null
 +++ b/lib/widgets/skraper_integration_tile.dart
 @@ -0,0 +1,449 @@
@@ -4574,10 +4859,9 @@ index 0000000..1b03818
 +    catalog.Platform(id: id, brand: '', name: PlatformNames.getDisplayName(id)),
 +];
 diff --git a/pubspec.lock b/pubspec.lock
-index 42f491c..bd1c689 100644
 --- a/pubspec.lock
 +++ b/pubspec.lock
-@@ -226,7 +226,7 @@ packages:
+@@ -226,7 +226,7 @@
      source: hosted
      version: "0.3.5+5"
    crypto:
@@ -4586,7 +4870,7 @@ index 42f491c..bd1c689 100644
      description:
        name: crypto
        sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
-@@ -1366,7 +1366,7 @@ packages:
+@@ -1366,7 +1366,7 @@
      source: hosted
      version: "1.1.0"
    xml:
@@ -4596,7 +4880,6 @@ index 42f491c..bd1c689 100644
        name: xml
        sha256: "971043b3a0d3da28727e40ed3e0b5d18b742fa5a68665cca88e74b7876d5e025"
 diff --git a/pubspec.yaml b/pubspec.yaml
-index ae14398..05718b3 100644
 --- a/pubspec.yaml
 +++ b/pubspec.yaml
 @@ -1,7 +1,7 @@
@@ -4604,11 +4887,11 @@ index ae14398..05718b3 100644
  description: "NOMROM game browser and download library for Windows, macOS and Android"
  publish_to: 'none'
 -version: 1.10.2+23
-+version: 1.10.3+24
++version: 1.10.4+25
  
  environment:
    sdk: ^3.10.1
-@@ -25,6 +25,10 @@ dependencies:
+@@ -25,6 +25,10 @@
    flutter_cache_manager: ^3.4.5
    http: ^1.6.0
    file: ^7.0.1
@@ -4620,7 +4903,6 @@ index ae14398..05718b3 100644
    # Local database for tracking downloads
    sqflite: ^2.3.2
 diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_test.dart
-index dc49e30..0ddb225 100644
 --- a/test/debrid/debrid_service_test.dart
 +++ b/test/debrid/debrid_service_test.dart
 @@ -1,4 +1,5 @@
@@ -4629,7 +4911,7 @@ index dc49e30..0ddb225 100644
  import 'package:flutter_test/flutter_test.dart';
  import 'package:flutter_secure_storage/flutter_secure_storage.dart';
  import 'package:romgi/models/models.dart';
-@@ -133,21 +134,18 @@ DebridService _service(_FakeProvider provider, {TorrentMetadata? meta}) =>
+@@ -133,21 +134,18 @@
      );
  
  void main() {
@@ -4663,7 +4945,7 @@ index dc49e30..0ddb225 100644
  
    test(
      'a temporary Keychain read error is retried instead of caching no key',
-@@ -199,24 +197,20 @@ void main() {
+@@ -199,24 +197,20 @@
      );
    }
  
@@ -4702,7 +4984,7 @@ index dc49e30..0ddb225 100644
  
    test('legacy migration preserves a newer provider-specific key', () async {
      final storage = _ControlledStorage({
-@@ -527,4 +521,182 @@ void main() {
+@@ -527,4 +521,182 @@
      await service.clearCredentials();
      expect(service.isConfiguredSync(), isFalse);
    });
@@ -4887,10 +5169,9 @@ index dc49e30..0ddb225 100644
  }
 diff --git a/test/debrid/download_failure_diagnostics_test.dart b/test/debrid/download_failure_diagnostics_test.dart
 new file mode 100644
-index 0000000..8126376
 --- /dev/null
 +++ b/test/debrid/download_failure_diagnostics_test.dart
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,538 @@
 +import 'dart:async';
 +import 'dart:io';
 +
@@ -4910,6 +5191,13 @@ index 0000000..8126376
 +  final failures = <String, DebridError>{};
 +  final started = <String, Completer<void>>{};
 +  final release = <String, Completer<void>>{};
++  final calls = <String, int>{};
++  final progress = <String, double>{};
++  final ignoreCancellation = <String>{};
++  final cachingCallbacks = <String, void Function(DebridCaching)>{};
++  final failureCallbacks = <String, void Function(DebridError)>{};
++  Completer<void>? configurationGate;
++  final configurationStarted = Completer<void>();
 +
 +  void plan(String name, DebridError failure) {
 +    failures[name] = failure;
@@ -4918,7 +5206,14 @@ index 0000000..8126376
 +  }
 +
 +  @override
-+  Future<bool> isConfigured({String? providerId}) async => true;
++  Future<bool> isConfigured({String? providerId}) async {
++    final gate = configurationGate;
++    if (gate != null) {
++      if (!configurationStarted.isCompleted) configurationStarted.complete();
++      await gate.future;
++    }
++    return true;
++  }
 +
 +  @override
 +  Future<DownloadLink?> resolveTorrentLink(
@@ -4929,14 +5224,57 @@ index 0000000..8126376
 +    Duration overallTimeout = const Duration(minutes: 3),
 +    Duration pollInterval = const Duration(seconds: 2),
 +  }) async {
-+    started[link.filename]!.complete();
-+    await release[link.filename]!.future;
-+    if (!(isCancelled?.call() ?? false)) {
-+      onFailure?.call(failures[link.filename]!);
++    final name = link.filename;
++    final failure = failures[name]!;
++    final gate = release[name]!;
++    calls.update(name, (value) => value + 1, ifAbsent: () => 1);
++    if (onCaching != null) cachingCallbacks[name] = onCaching;
++    if (onFailure != null) failureCallbacks[name] = onFailure;
++    if (progress[name] != null) {
++      onCaching?.call(DebridCaching(progress: progress[name]));
++    }
++    started[name]!.complete();
++    await gate.future;
++    if (ignoreCancellation.contains(name) || !(isCancelled?.call() ?? false)) {
++      onFailure?.call(failure);
 +    }
 +    return null;
 +  }
 +}
++
++class _Database extends fixture.FakeDatabaseService {
++  Completer<void>? pausedWriteGate;
++  final pausedWriteStarted = Completer<void>();
++
++  @override
++  Future<void> updateDownload(DownloadTask task) async {
++    if (task.waitingForDebrid && pausedWriteGate != null) {
++      if (!pausedWriteStarted.isCompleted) pausedWriteStarted.complete();
++      await pausedWriteGate!.future;
++    }
++    await super.updateDownload(task);
++  }
++}
++
++class _Torrents extends fixture.RecordingTorrentService {
++  int cancellations = 0;
++
++  @override
++  Future<void> cancel(String infohash) async {
++    cancellations++;
++  }
++
++  @override
++  Future<void> pauseAll() async {}
++
++  @override
++  Future<void> resumeAll() async {}
++}
++
++const _cachingTimeout = DebridError(
++  'TorBox is still preparing this torrent.',
++  code: 'CACHING_TIMEOUT',
++);
 +
 +DownloadTask _task(String id) => DownloadTask(
 +  id: id,
@@ -4971,41 +5309,49 @@ index 0000000..8126376
 +void main() {
 +  TestWidgetsFlutterBinding.ensureInitialized();
 +  late Directory temp;
-+  late fixture.FakeDatabaseService db;
-+  late fixture.RecordingTorrentService torrents;
++  late _Database db;
++  late _Torrents torrents;
 +  late _ControlledDebrid debrid;
 +  late StubAdapter transport;
 +  late DownloadService downloads;
 +
++  DownloadService createDownloads() =>
++      DownloadService(
++          db: db,
++          romDb: fixture.FakeRomDatabaseService(),
++          storage: fixture.FakeStorageService(temp),
++          notifications: fixture.FakeNotificationService(),
++          adapters: HostAdapterRegistry(),
++          torrents: torrents,
++          sevenZip: fixture.FakeSevenZipService(),
++          debrid: debrid,
++          dio: Dio()..httpClientAdapter = transport,
++        )
++        ..getLinkResolverPrefs = () => const LinkResolverPrefs(
++          debridEnabled: true,
++          torrentsDisabled: true,
++        );
++
 +  setUp(() {
 +    temp = Directory.systemTemp.createTempSync('nomrom-debrid-diagnostics-');
-+    db = fixture.FakeDatabaseService()..servePendingQueue = true;
-+    torrents = fixture.RecordingTorrentService();
++    db = _Database()..servePendingQueue = true;
++    torrents = _Torrents();
 +    debrid = _ControlledDebrid();
 +    transport = StubAdapter({});
-+    downloads =
-+        DownloadService(
-+            db: db,
-+            romDb: fixture.FakeRomDatabaseService(),
-+            storage: fixture.FakeStorageService(temp),
-+            notifications: fixture.FakeNotificationService(),
-+            adapters: HostAdapterRegistry(),
-+            torrents: torrents,
-+            sevenZip: fixture.FakeSevenZipService(),
-+            debrid: debrid,
-+            dio: Dio()..httpClientAdapter = transport,
-+          )
-+          ..getLinkResolverPrefs = () => const LinkResolverPrefs(
-+            debridEnabled: true,
-+            torrentsDisabled: true,
-+          );
++    downloads = createDownloads();
 +  });
 +
 +  tearDown(() async {
++    downloads.dispose();
++    final configurationGate = debrid.configurationGate;
++    if (configurationGate != null && !configurationGate.isCompleted) {
++      configurationGate.complete();
++    }
++    final writeGate = db.pausedWriteGate;
++    if (writeGate != null && !writeGate.isCompleted) writeGate.complete();
 +    for (final pending in debrid.release.values) {
 +      if (!pending.isCompleted) pending.complete();
 +    }
-+    downloads.dispose();
 +    await torrents.progress.close();
 +    await torrents.errors.close();
 +    temp.deleteSync(recursive: true);
@@ -5051,6 +5397,298 @@ index 0000000..8126376
 +    },
 +  );
 +
++  test(
++    'remote preparation pauses, preserves selection and releases the queue slot',
++    () async {
++      debrid.plan('waiting.rom', _cachingTimeout);
++      debrid.progress['waiting.rom'] = .4;
++      debrid.plan(
++        'next.rom',
++        const DebridError('Held next request.', code: 'REQUEST_TIMEOUT'),
++      );
++      final original = _task('waiting').copyWith(
++        progress: .2,
++        downloadedBytes: 200,
++        totalBytes: 1000,
++        bytesPerSecond: 100,
++      );
++      db.rows['waiting'] = original;
++      db.rows['next'] = _task('next');
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['waiting.rom']!.future;
++      expect(debrid.started['next.rom']!.isCompleted, isFalse);
++      debrid.release['waiting.rom']!.complete();
++      await debrid.started['next.rom']!.future;
++      final paused = db.rows['waiting']!;
++      expect(paused.status, DownloadStatus.paused);
++      expect(paused.waitingForDebrid, isTrue);
++      expect(paused.statusText, 'Waiting for debrid');
++      expect(paused.resolvingDebrid, isFalse);
++      expect(paused.fetchingMetadata, isFalse);
++      expect(paused.bytesPerSecond, 0);
++      expect(paused.progress, .4);
++      expect(paused.downloadedBytes, 200);
++      expect(paused.totalBytes, 1000);
++      expect(paused.link, same(original.link));
++      expect(paused.error, endsWith(' (CACHING_TIMEOUT)'));
++      expect(torrents.added, isEmpty);
++      expect(torrents.cancellations, 0);
++      expect(transport.calls, isEmpty);
++      downloads.setMaxConcurrentDownloads(2);
++      await Future<void>.delayed(const Duration(milliseconds: 20));
++      expect(debrid.calls['waiting.rom'], 1);
++    },
++  );
++
++  test(
++    'waiting reason survives serialization and restart without automatic polling',
++    () async {
++      debrid.plan('waiting.rom', _cachingTimeout);
++      debrid.progress['waiting.rom'] = .6;
++      db.rows['waiting'] = _task('waiting');
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['waiting.rom']!.future;
++      debrid.release['waiting.rom']!.complete();
++      await _until(() => db.rows['waiting']!.waitingForDebrid);
++      final stored = db.rows['waiting']!.toMap();
++      expect(
++        stored['status'],
++        2,
++      ); // Existing database/enum ID remains unchanged.
++      downloads.dispose();
++      db.rows['waiting'] = DownloadTask.fromMap(stored);
++      downloads = createDownloads();
++      await downloads.initialize();
++      await Future<void>.delayed(const Duration(milliseconds: 20));
++      expect(db.rows['waiting']!.waitingForDebrid, isTrue);
++      expect(db.rows['waiting']!.statusText, 'Waiting for debrid');
++      expect(db.rows['waiting']!.progress, .6);
++      expect(debrid.calls['waiting.rom'], 1);
++    },
++  );
++
++  test(
++    'Check again uses resume for one fresh bounded attempt and clears the waiting reason',
++    () async {
++      debrid.plan('waiting.rom', _cachingTimeout);
++      db.rows['waiting'] = _task('waiting');
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['waiting.rom']!.future;
++      debrid.release['waiting.rom']!.complete();
++      await _until(() => db.rows['waiting']!.waitingForDebrid);
++      debrid.plan(
++        'waiting.rom',
++        const DebridError('Invalid key.', code: 'BAD_TOKEN', authError: true),
++      );
++      await downloads.resumeDownload('waiting');
++      await debrid.started['waiting.rom']!.future;
++      expect(db.rows['waiting']!.status, DownloadStatus.downloading);
++      expect(db.rows['waiting']!.error, isNull);
++      expect(db.rows['waiting']!.waitingForDebrid, isFalse);
++      expect(debrid.calls['waiting.rom'], 2);
++      debrid.release['waiting.rom']!.complete();
++      await _until(() => db.rows['waiting']!.status == DownloadStatus.failed);
++      expect(db.rows['waiting']!.error, contains('BAD_TOKEN'));
++      expect(db.rows['waiting']!.error, isNot(contains('CACHING_TIMEOUT')));
++      await downloads.cancelDownload('waiting');
++      expect(db.rows.containsKey('waiting'), isFalse);
++    },
++  );
++
++  for (final failure in [
++    const DebridError('Network timeout.', code: 'REQUEST_TIMEOUT'),
++    const DebridError('Resolution timeout.', code: 'RESOLUTION_TIMEOUT'),
++    const DebridError('Invalid response.', code: 'INVALID_RESPONSE'),
++    const DebridError('Invalid key.', code: 'BAD_TOKEN', authError: true),
++    const DebridError(
++      'Not a cache timeout (CACHING_TIMEOUT)',
++      code: 'REQUEST_FAILED',
++    ),
++    const DebridError(
++      'Inconsistent auth failure.',
++      code: 'CACHING_TIMEOUT',
++      authError: true,
++    ),
++  ]) {
++    test(
++      '${failure.code}/${failure.authError} is still a failure, not a remote-preparation pause',
++      () async {
++        debrid.plan('failed.rom', failure);
++        db.rows['failed'] = _task('failed');
++        downloads.setMaxConcurrentDownloads(1);
++        await debrid.started['failed.rom']!.future;
++        debrid.release['failed.rom']!.complete();
++        await _until(() => db.rows['failed']!.status == DownloadStatus.failed);
++        expect(db.rows['failed']!.waitingForDebrid, isFalse);
++        expect(db.rows['failed']!.error, contains(failure.code!));
++      },
++    );
++  }
++
++  test(
++    'a cache timeout still falls back to native torrents when P2P is enabled',
++    () async {
++      downloads.getLinkResolverPrefs = () =>
++          const LinkResolverPrefs(debridEnabled: true);
++      debrid.plan('native.rom', _cachingTimeout);
++      db.rows['native'] = _task('native');
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['native.rom']!.future;
++      debrid.release['native.rom']!.complete();
++      await _until(() => torrents.added.isNotEmpty);
++      expect(db.rows['native']!.status, DownloadStatus.downloading);
++      expect(db.rows['native']!.waitingForDebrid, isFalse);
++      expect(torrents.added.single.fileIndices, [0]);
++      await downloads.pauseDownload('native');
++    },
++  );
++
++  test(
++    'cancelled polling ignores even a late caching timeout and progress callback',
++    () async {
++      debrid.plan('cancelled.rom', _cachingTimeout);
++      debrid.ignoreCancellation.add('cancelled.rom');
++      db.rows['cancelled'] = _task('cancelled');
++      final events = <DownloadTask>[];
++      final subscription = downloads.downloadStream.listen(events.add);
++      addTearDown(subscription.cancel);
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['cancelled.rom']!.future;
++      await downloads.cancelDownload('cancelled');
++      await Future<void>.delayed(Duration.zero);
++      final count = events.length;
++      debrid.cachingCallbacks['cancelled.rom']!(
++        const DebridCaching(progress: .9),
++      );
++      debrid.release['cancelled.rom']!.complete();
++      await Future<void>.delayed(const Duration(milliseconds: 20));
++      expect(db.rows.containsKey('cancelled'), isFalse);
++      expect(events.length, count);
++      expect(torrents.added, isEmpty);
++      expect(transport.calls, isEmpty);
++    },
++  );
++
++  test(
++    'cancelling while a waiting-state write is pending cannot revive the row or emit a stale pause',
++    () async {
++      debrid.plan('cancelled.rom', _cachingTimeout);
++      db.pausedWriteGate = Completer<void>();
++      db.rows['cancelled'] = _task('cancelled');
++      final events = <DownloadTask>[];
++      final subscription = downloads.downloadStream.listen(events.add);
++      addTearDown(subscription.cancel);
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.started['cancelled.rom']!.future;
++      debrid.release['cancelled.rom']!.complete();
++      await db.pausedWriteStarted.future;
++      final cancellation = downloads.cancelDownload('cancelled');
++      await _until(() => torrents.cancellations > 0);
++      await Future<void>.delayed(Duration.zero);
++      db.pausedWriteGate!.complete();
++      await cancellation;
++      await Future<void>.delayed(const Duration(milliseconds: 20));
++      expect(db.rows.containsKey('cancelled'), isFalse);
++      expect(events.where((task) => task.waitingForDebrid), isEmpty);
++    },
++  );
++
++  test(
++    'cancelling during saved configuration lookup cannot start debrid resolution or revive the task',
++    () async {
++      debrid.configurationGate = Completer<void>();
++      debrid.plan('cancelled.rom', _cachingTimeout);
++      db.rows['cancelled'] = _task('cancelled');
++      final events = <DownloadTask>[];
++      final subscription = downloads.downloadStream.listen(events.add);
++      addTearDown(subscription.cancel);
++      downloads.setMaxConcurrentDownloads(1);
++      await debrid.configurationStarted.future;
++      await downloads.cancelDownload('cancelled');
++      expect(db.rows.containsKey('cancelled'), isFalse);
++      debrid.configurationGate!.complete();
++      await Future<void>.delayed(const Duration(milliseconds: 20));
++      expect(debrid.calls, isEmpty);
++      expect(events, isEmpty);
++      expect(db.rows.containsKey('cancelled'), isFalse);
++      expect(torrents.added, isEmpty);
++      expect(transport.calls, isEmpty);
++    },
++  );
++
++  test('app-update preparation wins over a late caching timeout', () async {
++    debrid.plan('updating.rom', _cachingTimeout);
++    debrid.ignoreCancellation.add('updating.rom');
++    db.rows['updating'] = _task('updating');
++    final events = <DownloadTask>[];
++    final subscription = downloads.downloadStream.listen(events.add);
++    addTearDown(subscription.cancel);
++    downloads.setMaxConcurrentDownloads(1);
++    await debrid.started['updating.rom']!.future;
++    final preparation = downloads.prepareForAppUpdate();
++    debrid.cachingCallbacks['updating.rom']!(const DebridCaching(progress: .9));
++    debrid.release['updating.rom']!.complete();
++    await preparation;
++    expect(db.rows['updating']!.status, DownloadStatus.paused);
++    expect(db.rows['updating']!.error, isNull);
++    expect(db.rows['updating']!.resolvingDebrid, isFalse);
++    expect(db.rows['updating']!.waitingForDebrid, isFalse);
++    expect(
++      events.where(
++        (task) => task.status == DownloadStatus.failed || task.waitingForDebrid,
++      ),
++      isEmpty,
++    );
++    expect(torrents.added, isEmpty);
++  });
++
++  test(
++    'only a paused unresolved torrent with the exact marker is waiting for debrid',
++    () {
++      final base = _task('model');
++      expect(
++        base
++            .copyWith(
++              status: DownloadStatus.paused,
++              error: 'Still preparing. (CACHING_TIMEOUT)',
++            )
++            .waitingForDebrid,
++        isTrue,
++      );
++      for (final error in [
++        'CACHING_TIMEOUT',
++        'Still preparing. (CACHING_TIMEOUT_EXTRA)',
++        'Still preparing. (CACHING_TIMEOUT) extra',
++      ]) {
++        expect(
++          base
++              .copyWith(status: DownloadStatus.paused, error: error)
++              .waitingForDebrid,
++          isFalse,
++        );
++      }
++      expect(
++        base
++            .copyWith(
++              status: DownloadStatus.failed,
++              error: 'Still preparing. (CACHING_TIMEOUT)',
++            )
++            .waitingForDebrid,
++        isFalse,
++      );
++      expect(
++        base
++            .copyWith(
++              status: DownloadStatus.paused,
++              link: base.link.copyWith(debridResolved: true),
++              error: 'Still preparing. (CACHING_TIMEOUT)',
++            )
++            .waitingForDebrid,
++        isFalse,
++      );
++    },
++  );
++
 +  test('pausing a resolving task does not record a debrid failure', () async {
 +    debrid.plan(
 +      'paused.rom',
@@ -5072,8 +5710,226 @@ index 0000000..8126376
 +    expect(transport.calls, isEmpty);
 +  });
 +}
+diff --git a/test/debrid/torbox_file_metadata_test.dart b/test/debrid/torbox_file_metadata_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/debrid/torbox_file_metadata_test.dart
+@@ -0,0 +1,214 @@
++import 'dart:convert';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/services/debrid/debrid_provider.dart';
++import 'package:romgi/services/debrid/torbox_provider.dart';
++
++import 'debrid_test_utils.dart';
++
++// Catalog metadata only; no ROM bytes or authenticated provider responses.
++// Halo Rev 2 is from caprado/romgi catalog 20261101, commit d209b51a9cc8050e62b80390415f9295c23e0dec.
++const _hash = '068a566699b1136a64dca807286b3bdb5403458d';
++const _filename = 'Halo - Combat Evolved (USA) (Rev 2).zip';
++const _path = 'Redump/Microsoft - Xbox/$_filename';
++const _size = 6884752659;
++const _request = DebridFileRequest(
++  infohash: _hash,
++  magnet: 'magnet:?xt=urn:btih:$_hash',
++  fileIndex: 893,
++  filePath: _path,
++  expectedSize: _size,
++);
++
++void main() {
++  Future<(DebridResult, StubAdapter)> resolve(
++    List<Map<String, Object?>> files, {
++    DebridFileRequest request = _request,
++  }) async {
++    final dio = stubbedDio('https://api.torbox.app/v1/api', {
++      '/v1/api/torrents/createtorrent': (_) => jsonBody(
++        jsonEncode({
++          'success': true,
++          'data': {'torrent_id': 42, 'hash': _hash},
++        }),
++      ),
++      '/v1/api/torrents/mylist': (_) => jsonBody(
++        jsonEncode({
++          'success': true,
++          'data': {
++            'id': 42,
++            'hash': _hash,
++            'download_present': true,
++            'download_finished': true,
++            'files': files,
++          },
++        }),
++      ),
++      '/v1/api/torrents/requestdl': (_) => jsonBody(
++        jsonEncode({
++          'success': true,
++          'data': 'https://download.example/selected-file',
++        }),
++      ),
++    });
++    final result = await TorboxProvider(
++      dio: dio,
++    ).resolveFile(request, apiKey: 'fixture-key');
++    return (result, dio.httpClientAdapter as StubAdapter);
++  }
++
++  test('documented short_name works when name is absent or blank', () async {
++    for (final name in [null, '', '  ']) {
++      final (result, adapter) = await resolve([
++        {
++          'id': 7,
++          'short_name': 'Halo - Combat Evolved (USA).zip',
++          'size': _size,
++        },
++        {'id': 906, 'name': name, 'short_name': _filename, 'size': _size},
++      ]);
++      expect(result, isA<DebridReady>());
++      expect((result as DebridReady).filename, _filename);
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '906');
++    }
++  });
++
++  test('encoded provider path matches the exact selected revision', () async {
++    final (result, adapter) = await resolve([
++      {'id': 5, 'name': _path.replaceAll(' (Rev 2)', ''), 'size': _size},
++      {
++        'id': 99,
++        'name': _path.split('/').map(Uri.encodeComponent).join('/'),
++        'size': _size,
++      },
++    ]);
++    expect(result, isA<DebridReady>());
++    expect(adapter.calls.last.uri.queryParameters['file_id'], '99');
++  });
++
++  test(
++    'raw literal percent filename wins before decoded alternatives',
++    () async {
++      final (result, adapter) = await resolve(
++        [
++          {'id': 11, 'name': 'Game Name.zip', 'size': 1000},
++          {'id': 14, 'name': 'Game%20Name.zip', 'size': 1000},
++        ],
++        request: const DebridFileRequest(
++          infohash: _hash,
++          magnet: 'magnet:?xt=urn:btih:$_hash',
++          fileIndex: 0,
++          filePath: 'Game%20Name.zip',
++          expectedSize: 1000,
++        ),
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '14');
++    },
++  );
++
++  test('percent decoding preserves literal plus signs', () async {
++    final (result, adapter) = await resolve(
++      [
++        {'id': 12, 'name': 'Game+Plus%20%28Rev%202%29.zip', 'size': 1000},
++        {'id': 13, 'name': 'Game Plus (Rev 2).zip', 'size': 1000},
++      ],
++      request: const DebridFileRequest(
++        infohash: _hash,
++        magnet: 'magnet:?xt=urn:btih:$_hash',
++        fileIndex: 0,
++        filePath: 'Game+Plus (Rev 2).zip',
++        expectedSize: 1000,
++      ),
++    );
++    expect(result, isA<DebridReady>());
++    expect(adapter.calls.last.uri.queryParameters['file_id'], '12');
++  });
++
++  test(
++    'a short_name cannot erase conflicting explicit game directories',
++    () async {
++      final (result, adapter) = await resolve(
++        [
++          {
++            'id': 12,
++            'name': 'Other Game/disc1.bin',
++            'short_name': 'disc1.bin',
++            'size': 1000,
++          },
++        ],
++        request: const DebridFileRequest(
++          infohash: _hash,
++          magnet: 'magnet:?xt=urn:btih:$_hash',
++          fileIndex: 0,
++          filePath: 'Selected Game/disc1.bin',
++          expectedSize: 1000,
++        ),
++      );
++      expect((result as DebridError).code, 'FILE_NOT_FOUND');
++      expect(adapter.calls.length, 2);
++    },
++  );
++
++  test('duplicate short names with the same size remain ambiguous', () async {
++    final (result, adapter) = await resolve([
++      {'id': 1, 'short_name': _filename, 'size': _size},
++      {'id': 2, 'short_name': _filename, 'size': _size},
++    ]);
++    expect((result as DebridError).code, 'FILE_AMBIGUOUS');
++    expect(adapter.calls.length, 2);
++  });
++
++  test(
++    'completed torrent with empty file metadata can become ready on a later poll',
++    () async {
++      var lists = 0;
++      final dio = stubbedDio('https://api.torbox.app/v1/api', {
++        '/v1/api/torrents/createtorrent': (_) => jsonBody(
++          jsonEncode({
++            'success': true,
++            'data': {'torrent_id': 42, 'hash': _hash},
++          }),
++        ),
++        '/v1/api/torrents/mylist': (_) => jsonBody(
++          jsonEncode({
++            'success': true,
++            'data': {
++              'id': 42,
++              'hash': _hash,
++              'download_present': true,
++              'download_finished': true,
++              'progress': 1.0,
++              'files': lists++ == 0
++                  ? []
++                  : [
++                      {'id': 77, 'name': _path, 'size': _size},
++                    ],
++            },
++          }),
++        ),
++        '/v1/api/torrents/requestdl': (_) => jsonBody(
++          jsonEncode({
++            'success': true,
++            'data': 'https://download.example/selected-file',
++          }),
++        ),
++      });
++      final provider = TorboxProvider(dio: dio);
++      expect(
++        await provider.resolveFile(_request, apiKey: 'fixture-key'),
++        isA<DebridCaching>(),
++      );
++      expect(
++        await provider.resolveFile(_request, apiKey: 'fixture-key'),
++        isA<DebridReady>(),
++      );
++      final calls = (dio.httpClientAdapter as StubAdapter).calls;
++      expect(
++        calls.where((call) => call.uri.path.endsWith('/createtorrent')).length,
++        1,
++      );
++      expect(calls.last.uri.queryParameters['file_id'], '77');
++    },
++  );
++}
 diff --git a/test/debrid/torbox_provider_test.dart b/test/debrid/torbox_provider_test.dart
-index 0066ac7..d155217 100644
 --- a/test/debrid/torbox_provider_test.dart
 +++ b/test/debrid/torbox_provider_test.dart
 @@ -1,3 +1,5 @@
@@ -5082,7 +5938,7 @@ index 0066ac7..d155217 100644
  import 'package:dio/dio.dart';
  import 'package:flutter_test/flutter_test.dart';
  import 'package:romgi/services/debrid/debrid_provider.dart';
-@@ -65,18 +67,21 @@ void main() {
+@@ -65,18 +67,21 @@
        });
      }
  
@@ -5116,7 +5972,7 @@ index 0066ac7..d155217 100644
  
      test('a malformed response cannot be accepted as an account', () async {
        final dio = stubbedDio(_base, {
-@@ -205,7 +210,7 @@ void main() {
+@@ -205,7 +210,7 @@
        '/v1/api/torrents/createtorrent': (_) =>
            jsonBody('{"success":true,"data":{"torrent_id":7}}'),
        '/v1/api/torrents/mylist': (_) => jsonBody(
@@ -5125,7 +5981,7 @@ index 0066ac7..d155217 100644
          '"download_finished":false,"progress":0.4,"files":[]}}',
        ),
      });
-@@ -243,7 +248,7 @@ void main() {
+@@ -243,7 +248,7 @@
        '/v1/api/torrents/createtorrent': (_) =>
            jsonBody('{"success":true,"data":{"torrent_id":9}}'),
        '/v1/api/torrents/mylist': (_) => jsonBody(
@@ -5134,7 +5990,7 @@ index 0066ac7..d155217 100644
          '"download_finished":true,"progress":1.0,"files":['
          '{"id":0,"name":"disc1.iso","size":500},'
          '{"id":1,"name":"disc2.iso","size":500}]}}',
-@@ -346,4 +351,340 @@ void main() {
+@@ -346,4 +351,340 @@
        'Invalid TorBox API key',
      );
    });
@@ -5475,11 +6331,51 @@ index 0066ac7..d155217 100644
 +    );
 +  });
  }
+diff --git a/test/desktop_workspace_widget_test.dart b/test/desktop_workspace_widget_test.dart
+--- a/test/desktop_workspace_widget_test.dart
++++ b/test/desktop_workspace_widget_test.dart
+@@ -111,6 +111,37 @@
+ }
+ 
+ void main() {
++  testWidgets(
++    'desktop queue labels remote preparation and Check again resumes the retained task',
++    (tester) async {
++      final waiting = DownloadTask.fromMap({
++        ..._task(0, status: DownloadStatus.paused).toMap(),
++        'link_torrent_infohash': 'abcdef0123456789abcdef0123456789abcdef01',
++        'error':
++            'The debrid service is still preparing this torrent. (CACHING_TIMEOUT)',
++      });
++      final service = _QueueService()..active.add(waiting);
++      await _mount(
++        tester,
++        design: AppDesign.console,
++        width: 940,
++        scale: 1.5,
++        downloads: service,
++        child: const Align(
++          alignment: Alignment.bottomCenter,
++          child: DesktopDownloadQueue(),
++        ),
++      );
++      expect(find.text('Waiting for debrid'), findsOneWidget);
++      expect(find.byTooltip('Resume ${waiting.title}'), findsNothing);
++      await tester.tap(find.byTooltip('Check again: ${waiting.title}'));
++      await tester.pumpAndSettle();
++      expect(service.resumedIds, [waiting.id]);
++      expect(find.text('Waiting for debrid'), findsNothing);
++      expect(find.text('Waiting'), findsOneWidget);
++      expect(tester.takeException(), isNull);
++    },
++  );
+   for (final width in [940.0, 1180.0]) {
+     for (final scale in [1.0, 1.5]) {
+       testWidgets(
 diff --git a/test/download_update_preparation_test.dart b/test/download_update_preparation_test.dart
-index a39d6b5..161dd02 100644
 --- a/test/download_update_preparation_test.dart
 +++ b/test/download_update_preparation_test.dart
-@@ -106,6 +106,7 @@ class _Debrid extends Fake implements DebridService {
+@@ -106,6 +106,7 @@
    Future<DownloadLink?> resolveTorrentLink(
      DownloadLink link, {
      void Function(DebridCaching status)? onCaching,
@@ -5487,7 +6383,7 @@ index a39d6b5..161dd02 100644
      bool Function()? isCancelled,
      Duration overallTimeout = const Duration(minutes: 3),
      Duration pollInterval = const Duration(seconds: 2),
-@@ -289,128 +290,119 @@ void main() {
+@@ -289,128 +290,119 @@
      await folder.delete(recursive: true);
    });
  
@@ -5497,7 +6393,37 @@ index a39d6b5..161dd02 100644
 -      final gate = Completer<void>();
 -      db.pendingReadGate = gate;
 -      db.rows['active'] = _task('active');
--      final download = create()..setMaxConcurrentDownloads(1);
++  test('freeze precedes an already pending queue read and restore restarts scheduling', () async {
++    final gate = Completer<void>();
++    db.pendingReadGate = gate;
++    db.rows['active'] = _task('active');
++    final download = create()..setMaxConcurrentDownloads(1);
++    await db.pendingReadStarted.future;
++    final preparation = download.prepareForAppUpdate();
++    expect(download.isPreparingForAppUpdate, isTrue);
++    gate.complete();
++    await preparation;
++    expect(transport.requests, isEmpty);
++    expect(db.rows['active']!.status, DownloadStatus.pending);
++    download.setMaxConcurrentDownloads(5);
++    await Future<void>.delayed(Duration.zero);
++    expect(transport.requests, isEmpty);
++    await download.resumeAfterAppUpdatePreparation();
++    await _until(() => db.rows['active']!.status == DownloadStatus.completed);
++    expect(transport.requests, hasLength(1));
++  });
++
++  test('preparation waits for the actual file write and preserves completed failed and user paused rows', () async {
++    final gate = _WriteGate();
++    db.rows.addAll({
++      'active': _task('active'),
++      'queued': _task('queued'),
++      'done': _task('done', status: DownloadStatus.completed),
++      'failed': _task('failed', status: DownloadStatus.failed),
++      'user-paused': _task('user-paused', status: DownloadStatus.paused),
++    });
++    await IOOverrides.runWithIOOverrides(() async {
+       final download = create()..setMaxConcurrentDownloads(1);
 -      await db.pendingReadStarted.future;
 -      final preparation = download.prepareForAppUpdate();
 -      expect(download.isPreparingForAppUpdate, isTrue);
@@ -5572,26 +6498,7 @@ index a39d6b5..161dd02 100644
 -      expect(db.rows['user-paused']!.status, DownloadStatus.paused);
 -    },
 -  );
-+  test('freeze precedes an already pending queue read and restore restarts scheduling', () async {
-+    final gate = Completer<void>();
-+    db.pendingReadGate = gate;
-+    db.rows['active'] = _task('active');
-+    final download = create()..setMaxConcurrentDownloads(1);
-+    await db.pendingReadStarted.future;
-+    final preparation = download.prepareForAppUpdate();
-+    expect(download.isPreparingForAppUpdate, isTrue);
-+    gate.complete();
-+    await preparation;
-+    expect(transport.requests, isEmpty);
-+    expect(db.rows['active']!.status, DownloadStatus.pending);
-+    download.setMaxConcurrentDownloads(5);
-+    await Future<void>.delayed(Duration.zero);
-+    expect(transport.requests, isEmpty);
-+    await download.resumeAfterAppUpdatePreparation();
-+    await _until(() => db.rows['active']!.status == DownloadStatus.completed);
-+    expect(transport.requests, hasLength(1));
-+  });
- 
+-
 -  test(
 -    'delayed progress SQL drains before the final paused write and cannot overwrite it',
 -    () async {
@@ -5605,17 +6512,7 @@ index a39d6b5..161dd02 100644
 -      );
 -      db.blockProgress = true;
 -      db.rows['active'] = _task('active', size: 8);
-+  test('preparation waits for the actual file write and preserves completed failed and user paused rows', () async {
-+    final gate = _WriteGate();
-+    db.rows.addAll({
-+      'active': _task('active'),
-+      'queued': _task('queued'),
-+      'done': _task('done', status: DownloadStatus.completed),
-+      'failed': _task('failed', status: DownloadStatus.failed),
-+      'user-paused': _task('user-paused', status: DownloadStatus.paused),
-+    });
-+    await IOOverrides.runWithIOOverrides(() async {
-       final download = create()..setMaxConcurrentDownloads(1);
+-      final download = create()..setMaxConcurrentDownloads(1);
 -      await _until(() => transport.requests.isNotEmpty);
 -      body.add(Uint8List.fromList([1, 2, 3, 4]));
 -      await db.progressStarted.future;
@@ -5719,7 +6616,7 @@ index a39d6b5..161dd02 100644
  
    test(
      'an extraction is refused without cancelling or interrupting publication',
-@@ -449,34 +441,31 @@ void main() {
+@@ -449,34 +441,31 @@
      },
    );
  
@@ -5778,9 +6675,79 @@ index a39d6b5..161dd02 100644
  
    test(
      'native torrents pause and detach callbacks before preparation succeeds',
+diff --git a/test/downloads_screen_actions_test.dart b/test/downloads_screen_actions_test.dart
+--- a/test/downloads_screen_actions_test.dart
++++ b/test/downloads_screen_actions_test.dart
+@@ -156,6 +156,43 @@
+       },
+     );
+   }
++
++  testWidgets(
++    'waiting for debrid offers Check again through resume and preserves action guards',
++    (tester) async {
++      final waiting = DownloadTask.fromMap({
++        ..._task(DownloadStatus.paused).toMap(),
++        'link_torrent_infohash': 'abcdef0123456789abcdef0123456789abcdef01',
++        'error':
++            'The debrid service is still preparing this torrent. (CACHING_TIMEOUT)',
++      });
++      final service = _Service()
++        ..active.add(waiting)
++        ..gate = Completer<void>();
++      await _mount(tester, service);
++      expect(find.textContaining('Waiting for debrid'), findsOneWidget);
++      expect(find.textContaining('Check its dashboard'), findsOneWidget);
++      expect(find.textContaining('Failed ('), findsNothing);
++      final button = find.widgetWithText(TextButton, 'Check again');
++      expect(button, findsOneWidget);
++      final check = tester.widget<TextButton>(button).onPressed!;
++      check();
++      check();
++      await tester.pump();
++      expect(service.calls, ['resume']);
++      expect(tester.widget<TextButton>(button).onPressed, isNull);
++      expect(tester.widget<IconButton>(_button('Cancel')).onPressed, isNull);
++      service.gate!.complete();
++      await tester.pumpAndSettle();
++      expect(
++        find.text('Could not resume this download. Please try again.'),
++        findsOneWidget,
++      );
++      expect(tester.widget<TextButton>(button).onPressed, isNotNull);
++      expect(tester.widget<IconButton>(_button('Cancel')).onPressed, isNotNull);
++      expect(tester.takeException(), isNull);
++    },
++  );
+ 
+   testWidgets('Clear completed handles failure and restores its action', (
+     tester,
+@@ -270,8 +307,9 @@
+       open();
+       await tester.pumpAndSettle();
+       expect(find.byType(InternetArchiveLoginScreen), findsOneWidget);
+-      Navigator.of(tester.element(find.byType(InternetArchiveLoginScreen)))
+-          .pop(false);
++      Navigator.of(
++        tester.element(find.byType(InternetArchiveLoginScreen)),
++      ).pop(false);
+       await tester.pumpAndSettle();
+       expect(service.calls, isEmpty);
+       expect(
+@@ -295,8 +333,9 @@
+     await _mount(tester, service);
+     await tester.tap(find.widgetWithText(TextButton, 'Login'));
+     await tester.pumpAndSettle();
+-    Navigator.of(tester.element(find.byType(InternetArchiveLoginScreen)))
+-        .pop(true);
++    Navigator.of(
++      tester.element(find.byType(InternetArchiveLoginScreen)),
++    ).pop(true);
+     await tester.pumpAndSettle();
+     expect(service.calls, ['retry']);
+     expect(
 diff --git a/test/skraper/rom_identification_dialog_test.dart b/test/skraper/rom_identification_dialog_test.dart
 new file mode 100644
-index 0000000..8607df7
 --- /dev/null
 +++ b/test/skraper/rom_identification_dialog_test.dart
 @@ -0,0 +1,177 @@
@@ -5963,7 +6930,6 @@ index 0000000..8607df7
 +}
 diff --git a/test/skraper/rom_identity_service_test.dart b/test/skraper/rom_identity_service_test.dart
 new file mode 100644
-index 0000000..c9737d0
 --- /dev/null
 +++ b/test/skraper/rom_identity_service_test.dart
 @@ -0,0 +1,110 @@
@@ -6079,7 +7045,6 @@ index 0000000..c9737d0
 +}
 diff --git a/test/skraper/rom_lookup_test.dart b/test/skraper/rom_lookup_test.dart
 new file mode 100644
-index 0000000..15839fd
 --- /dev/null
 +++ b/test/skraper/rom_lookup_test.dart
 @@ -0,0 +1,166 @@
@@ -6251,7 +7216,6 @@ index 0000000..15839fd
 +}
 diff --git a/test/skraper/skraper_import_service_test.dart b/test/skraper/skraper_import_service_test.dart
 new file mode 100644
-index 0000000..964b08d
 --- /dev/null
 +++ b/test/skraper/skraper_import_service_test.dart
 @@ -0,0 +1,490 @@
@@ -6747,7 +7711,6 @@ index 0000000..964b08d
 +}
 diff --git a/test/skraper/skraper_integration_widget_test.dart b/test/skraper/skraper_integration_widget_test.dart
 new file mode 100644
-index 0000000..f4a98e7
 --- /dev/null
 +++ b/test/skraper/skraper_integration_widget_test.dart
 @@ -0,0 +1,492 @@
@@ -7245,7 +8208,6 @@ index 0000000..f4a98e7
 +}
 diff --git a/test/skraper/skraper_metadata_integration_test.dart b/test/skraper/skraper_metadata_integration_test.dart
 new file mode 100644
-index 0000000..d14f3b3
 --- /dev/null
 +++ b/test/skraper/skraper_metadata_integration_test.dart
 @@ -0,0 +1,299 @@
@@ -7550,7 +8512,6 @@ index 0000000..d14f3b3
 +}
 diff --git a/test/skraper/skraper_metadata_provider_test.dart b/test/skraper/skraper_metadata_provider_test.dart
 new file mode 100644
-index 0000000..8997beb
 --- /dev/null
 +++ b/test/skraper/skraper_metadata_provider_test.dart
 @@ -0,0 +1,95 @@
@@ -7651,7 +8612,6 @@ index 0000000..8997beb
 +}
 diff --git a/validation/skraper-integration.json b/validation/skraper-integration.json
 new file mode 100644
-index 0000000..557a6dc
 --- /dev/null
 +++ b/validation/skraper-integration.json
 @@ -0,0 +1,108 @@

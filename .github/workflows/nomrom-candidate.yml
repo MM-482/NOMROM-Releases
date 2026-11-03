@@ -1,4 +1,4 @@
-name: NOMROM Windows integration candidate
+name: NOMROM Windows TorBox compatibility candidate
 
 on:
   workflow_dispatch:
@@ -20,6 +20,7 @@ jobs:
     env:
       CI: 'true'
       BOT: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
       POWERSHELL_TELEMETRY_OPTOUT: '1'
     defaults:
       run:
@@ -50,6 +51,7 @@ jobs:
               throw 'Source preparation did not return one validated application directory.'
             }
             Copy-Item -LiteralPath (Join-Path $output 'preparation.json') -Destination $verification
+            & (Join-Path $candidate 'snapshot-source.ps1') -AppRoot $app -OutputDirectory $verification
             "NOMROM_APP_ROOT=$app" >> $env:GITHUB_ENV
             "app_root=$app" >> $env:GITHUB_OUTPUT
           } finally { Stop-Transcript | Out-Null }
@@ -95,6 +97,8 @@ jobs:
               -UpdateConfigurationFile (Join-Path $env:NOMROM_APP_ROOT 'config/windows-updates-public.json')
             $infoPath = Join-Path $env:NOMROM_APP_ROOT 'build/windows/x64/runner/Release/BUILD-INFO.json'
             $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+            $snapshot = Get-Content -LiteralPath (Join-Path $env:NOMROM_VERIFY_ROOT 'source-before-build.json') -Raw | ConvertFrom-Json
+            if ($info.sourceSha256 -cne $snapshot.sourceSha256) { throw 'Compiled source differs from the preserved Windows source snapshot.' }
             if ($info.screenScraper.configured -ne $false) { throw 'ScreenScraper must remain unconfigured in this candidate.' }
             if ($info.updateFeed.configured -ne $true -or $info.updateFeed.algorithm -ne 'rsa-pss-sha256') {
               throw 'The existing signed-update public configuration was not preserved.'

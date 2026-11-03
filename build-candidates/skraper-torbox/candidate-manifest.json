@@ -1,8 +1,8 @@
 {
-  "candidate_version": "1.10.3+24",
+  "candidate_version": "1.10.4+25",
   "base_archive_url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.10.2/NOMROM-1.10.2-windows-source.zip",
   "base_archive_sha256": "ad13561aa0e7f6796c9b107d88c641b3c4c92f280a4104e41f18d7eaf4356756",
-  "patch_sha256": "b4d7154c85497cf9f3eed3809ff7c25ce0ac5efe6d0609db6d6709257cad4fbb",
+  "patch_sha256": "8eb56e5b93684876fe5888a278143a9b23819e1432198254ebce867af2fcbee8",
   "source_root": "NOMROM-Windows-Source",
   "changed_files": [
     {
@@ -16,9 +16,24 @@
       "result_normalized_sha256": "1f5c8cf3bc05f8dfed08bc53a295068adc1ebf9275705380934d8f1790dbf623"
     },
     {
+      "path": "TORBOX-COMPATIBILITY.txt",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "5bbd83028f0e07882651433209f0a6547ce9da32ed2ff4b2142f24d6cce20e20"
+    },
+    {
       "path": "WINDOWS-CANDIDATE.txt",
       "base_normalized_sha256": null,
       "result_normalized_sha256": "806e036633922b6e8274d16b1e8ed285470ef1ab218306034d0803ea3630de99"
+    },
+    {
+      "path": "lib/models/download_task.dart",
+      "base_normalized_sha256": "db07acfae6459fa23068daf61e640d7ba702ad107640ac1dd578e964db0a7348",
+      "result_normalized_sha256": "375af50436f745cc5dbb0233c0395bfdc17deda1d6aa697167f643710f66af09"
+    },
+    {
+      "path": "lib/screens/downloads_screen.dart",
+      "base_normalized_sha256": "d13c80044e8465952fd434c863da3ca3d6e22cc21433d0a6fe1d4656d741e589",
+      "result_normalized_sha256": "36ebccf1af82708efbd43b148a570e21302c3e102f710e1bc9b99e06e2ac29f7"
     },
     {
       "path": "lib/screens/settings_screen.dart",
@@ -33,7 +48,7 @@
     {
       "path": "lib/services/debrid/torbox_provider.dart",
       "base_normalized_sha256": "9c45a647f1ba1b50a0f4eb13ca9d912a159ba7b15395d913704848db78cf17a3",
-      "result_normalized_sha256": "eddbfe39c4d529496b4419577c9459d11de0aec802e45773b73014a29c755f81"
+      "result_normalized_sha256": "31bc4d3338898eed126ac0d47acc932ce63290b95ada94e9b2bccce2280de4b3"
     },
     {
       "path": "lib/services/debrid_service.dart",
@@ -43,7 +58,7 @@
     {
       "path": "lib/services/download_service.dart",
       "base_normalized_sha256": "c0042ac8acc0a1d5c98cdc1844aeefbea888364225da802283d09186ee7f2db3",
-      "result_normalized_sha256": "c0a333d00d4249eba6deda2efc290e91094984f1391d59e81a1b81290645233a"
+      "result_normalized_sha256": "3c9f88587d3ebd3c834368295d31893ba2770acc60209e7420c2becaa18cb4e7"
     },
     {
       "path": "lib/services/game_artwork_cache.dart",
@@ -81,6 +96,11 @@
       "result_normalized_sha256": "4f15ad71fdf546ad37eef9cf5d9dc48a979348eed55b9c0fb34287cb9d439e02"
     },
     {
+      "path": "lib/widgets/desktop_download_queue.dart",
+      "base_normalized_sha256": "0e25245c0fd894076cfbf36d0cecb7ebef31df20f4a3674f0ceea852740b393c",
+      "result_normalized_sha256": "f54cc92c959ad642dafb06693a2fbf8605c69a53f9e97d471052d3ba78d73b24"
+    },
+    {
       "path": "lib/widgets/rom_identification_dialog.dart",
       "base_normalized_sha256": null,
       "result_normalized_sha256": "895dc6b18300b8648cc337796e1e40632f4824eb5eedf542143e11534fd8e3fb"
@@ -108,7 +128,7 @@
     {
       "path": "pubspec.yaml",
       "base_normalized_sha256": "8045839645a494ff6851027b0b271cb6527e4ffc986ca8f93a2e2d716a78d6ef",
-      "result_normalized_sha256": "10e964f6dbeb25774b1f1f2f5102591c3abee26e584dae5c70cb26918c44bf19"
+      "result_normalized_sha256": "78437ee645bb3fb3cf3c47e3657f6b59a3fe2ddc4c06889b7e7219b5ef654d9c"
     },
     {
       "path": "test/debrid/debrid_service_test.dart",
@@ -118,7 +138,12 @@
     {
       "path": "test/debrid/download_failure_diagnostics_test.dart",
       "base_normalized_sha256": null,
-      "result_normalized_sha256": "ca3c3402dddb8d9c8e1386f0067b0667d5d9bc86eeb4ebe6f3051d66aac4d04a"
+      "result_normalized_sha256": "d5a282744907d5f05878439fc8d76b4c63fb26cd094259a48c8317961997044e"
+    },
+    {
+      "path": "test/debrid/torbox_file_metadata_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "76907607f901d511df7b312aae8cc910b04ce70a8af277d4dcf437f4991773eb"
     },
     {
       "path": "test/debrid/torbox_provider_test.dart",
@@ -126,9 +151,19 @@
       "result_normalized_sha256": "1c1c5a215a9f8f7424c14c4b73b7a440334b0cc1cdc606b1bdb89c6ff4c81919"
     },
     {
+      "path": "test/desktop_workspace_widget_test.dart",
+      "base_normalized_sha256": "f87233ff984dba40302838c5a2b5038fe5661ebf47447633cbd4250139d418df",
+      "result_normalized_sha256": "3d2d7fc3d6f71c4ec4190d93899b8d4447bd23d5ffd7744dbf16b020d3fb404a"
+    },
+    {
       "path": "test/download_update_preparation_test.dart",
       "base_normalized_sha256": "affd7c2ae1ffbec10b4a038fdf17be75b19bc634840869a66e2114ee819d5cbb",
       "result_normalized_sha256": "c8144859aaa53ea8b86315b4a2db13a23079f9c58db5d2aed2f0a33a4a1911d0"
+    },
+    {
+      "path": "test/downloads_screen_actions_test.dart",
+      "base_normalized_sha256": "2a67546c72963f537234d53bfd6916504ae20c393346e080ad845c145721de10",
+      "result_normalized_sha256": "0466f4358295db730f23a4b29b7b7bb23cd22c1a37365ce2e600b82f0874c5e1"
     },
     {
       "path": "test/skraper/rom_identification_dialog_test.dart",
