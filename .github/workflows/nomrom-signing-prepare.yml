@@ -1,0 +1,83 @@
+name: Prepare NOMROM signed update feed for review
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/nomrom-signing-*'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nomrom-signing-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: startsWith(github.ref, 'refs/heads/codex/nomrom-signing-')
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      POWERSHELL_TELEMETRY_OPTOUT: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out reviewed signing preparation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Create isolated review output
+        id: paths
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP ('nomrom-signing-' + [guid]::NewGuid().ToString('N'))
+          if (Test-Path -LiteralPath $work) { throw 'Refusing to reuse a signing work directory.' }
+          $review = Join-Path $work 'review'
+          [IO.Directory]::CreateDirectory($review) | Out-Null
+          '{"status":"not_started","published":false,"liveFeedChanged":false}' | Set-Content -LiteralPath (Join-Path $review 'readiness.json') -Encoding utf8
+          "NOMROM_SIGNING_WORK=$work" >> $env:GITHUB_ENV
+          "review_dir=$review" >> $env:GITHUB_OUTPUT
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'build-candidates/skraper-signing'
+          . (Join-Path $scripts 'signing-common.ps1')
+          $request = Read-SigningRequest (Join-Path $scripts 'signing-request.json')
+          "mode=$($request['mode'])" >> $env:GITHUB_OUTPUT
+
+      - name: Fetch exact successful candidate and source inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'build-candidates/skraper-signing'
+          & (Join-Path $scripts 'fetch-candidate.ps1') -RequestPath (Join-Path $scripts 'signing-request.json') -WorkDirectory $env:NOMROM_SIGNING_WORK
+
+      - name: Reconstruct and verify candidate without signing access
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'build-candidates/skraper-signing'
+          & (Join-Path $scripts 'stage-candidate.ps1') -RequestPath (Join-Path $scripts 'signing-request.json') -WorkDirectory $env:NOMROM_SIGNING_WORK
+
+      - name: Prepare signed feed using the existing publisher key
+        if: success() && steps.paths.outputs.mode == 'sign'
+        env:
+          NOMROM_UPDATE_PRIVATE_KEY_XML: ${{ secrets.NOMROM_UPDATE_PRIVATE_KEY_XML }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'build-candidates/skraper-signing'
+          # Do not enable a transcript or print the environment in this step.
+          & (Join-Path $scripts 'sign-feed.ps1') -RequestPath (Join-Path $scripts 'signing-request.json') -WorkDirectory $env:NOMROM_SIGNING_WORK
+
+      - name: Retain audit or signed-feed preparation for review only
+        if: always() && steps.paths.outputs.review_dir != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: NOMROM-signed-feed-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.paths.outputs.review_dir }}/readiness.json
+            ${{ steps.paths.outputs.review_dir }}/windows-stable.json
+            ${{ steps.paths.outputs.review_dir }}/NOMROM-*-prebuild-source-audit.zip
+          if-no-files-found: error
+          retention-days: 14

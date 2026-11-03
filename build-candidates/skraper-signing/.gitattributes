@@ -1,0 +1,4 @@
+*.ps1 -text
+*.json -text
+*.txt -text
+*.yml text eol=lf

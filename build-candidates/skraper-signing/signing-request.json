@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "mode": "audit",
+  "repository": "MM-482/NOMROM-Releases",
+  "candidate_run_id": 41576659422,
+  "candidate_run_attempt": 1,
+  "candidate_head_sha": "6a56a03eb6b74639ac9d891c04e79c39b1cf9fa0",
+  "candidate_branch": "codex/nomrom-skraper-torbox-20261103",
+  "candidate_workflow_path": ".github/workflows/nomrom-candidate.yml",
+  "artifact_id": 13204935847,
+  "artifact_sha256": "fd0819beb464507d47a196ad3123f3c9c2943321154ccea4e4bdd102a31e79c0",
+  "artifact_size_in_bytes": 30174989,
+  "candidate_version": "1.10.3+24",
+  "source_input_directory": "build-candidates/skraper-torbox",
+  "source_inputs": {
+    "candidate-manifest.json": "1446ed140c45646b9198ab5d971bf028151ab3d3e1beb0bee6db7a669d016581",
+    "candidate.patch": "b4d7154c85497cf9f3eed3809ff7c25ce0ac5efe6d0609db6d6709257cad4fbb",
+    "prepare-source.ps1": "b05f1cbaa3388d9bacdf9640f2df3c4a887afc135f421e40c57f418464fa9807"
+  },
+  "base_archive_url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.10.2/NOMROM-1.10.2-windows-source.zip",
+  "base_archive_sha256": "ad13561aa0e7f6796c9b107d88c641b3c4c92f280a4104e41f18d7eaf4356756",
+  "trusted_signing_scripts": {
+    "scripts/new-windows-update-feed.ps1": "c7ff1d5b8b4305afac74aa48fcd554bd5de2a5eb923e92d1ce1ec65219871c2e",
+    "scripts/windows-update-common.ps1": "dc4195333e30b36cda448201be03c494b63836c2409c7d0286771728c6d61e45",
+    "scripts/windows-common.ps1": "798b5fe8451b0081dc1c61e0402d241d7de220c22968fdbed1a6f615370bf337",
+    "scripts/verify-windows.ps1": "b66fa91706ba34b83bd372a349da9c6d4ef92ec018d85d20eb9be25c108a5ac8"
+  },
+  "public_update": {
+    "url": "https://github.com/MM-482/NOMROM-Releases/releases/latest/download/windows-stable.json",
+    "key_id": "nomrom-windows-2026",
+    "public_key_sha256": "3f50e74b3dbf3db88202fa3eb2fe75dede5c2a7ed5452cbd5aa57014ecc401fd",
+    "algorithm": "rsa-pss-sha256",
+    "channel": "stable"
+  },
+  "release_notes_sha256": "f3bbb5670610987f09e6d72618ac84d036f0b6075e1f0dfafd8d162f9612e8c5"
+}
