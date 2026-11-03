@@ -72,6 +72,9 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $flutter 'bin/flutter.bat') -PathType Leaf)) {
               throw 'Flutter archive is missing its expected Windows launcher.'
             }
+            # Complete first-run SDK setup before the build reads machine-readable version JSON.
+            & (Join-Path $flutter 'bin/flutter.bat') --version
+            if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK initialization failed.' }
             "FLUTTER_ROOT=$flutter" >> $env:GITHUB_ENV
             (Join-Path $flutter 'bin') >> $env:GITHUB_PATH
             Write-Host "Official Flutter 3.47.7 archive SHA-256 verified: $sha"
