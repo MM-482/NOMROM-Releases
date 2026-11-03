@@ -1,8 +1,8 @@
 {
-  "candidate_version": "1.10.6+27",
+  "candidate_version": "1.10.7+28",
   "base_archive_url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.10.2/NOMROM-1.10.2-windows-source.zip",
   "base_archive_sha256": "ad13561aa0e7f6796c9b107d88c641b3c4c92f280a4104e41f18d7eaf4356756",
-  "patch_sha256": "3a8bf11174e951374b618a218d78ac1d60cbf6d5e0c3bf2ff1c20670c3072d0f",
+  "patch_sha256": "0181bbbd882b5afa580dc9078c641af579312f9a5cb732fcd840e298a5b6d530",
   "source_root": "NOMROM-Windows-Source",
   "changed_files": [
     {
@@ -31,6 +31,11 @@
       "result_normalized_sha256": "2080882c80a0502fa175357f065fef964e2046801da7a04e9409ca4e40a07720"
     },
     {
+      "path": "TORBOX-ZIP-COMPATIBILITY.txt",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "b7ab91674bc60a91d99a38f7fdaed495344b6c04bf362c74e9031681964c5974"
+    },
+    {
       "path": "WINDOWS-CANDIDATE.txt",
       "base_normalized_sha256": null,
       "result_normalized_sha256": "806e036633922b6e8274d16b1e8ed285470ef1ab218306034d0803ea3630de99"
@@ -38,7 +43,7 @@
     {
       "path": "lib/models/debrid_failure_details.dart",
       "base_normalized_sha256": null,
-      "result_normalized_sha256": "3f892c61cc598468a9510b8ef6eba5903d4c69f25c6f4bce8ea67d1999c8d7a3"
+      "result_normalized_sha256": "cb251cd7fe028931c6d6c9878e7cd42c2e461a79e88c4f7747090cc73c344dcf"
     },
     {
       "path": "lib/models/download_link.dart",
@@ -108,7 +113,7 @@
     {
       "path": "lib/services/remote_zip_service.dart",
       "base_normalized_sha256": null,
-      "result_normalized_sha256": "c2d36f3cf2f078c892810e8c295284405e7c1317f843dcd522ff11a046ea64f4"
+      "result_normalized_sha256": "621e54210c3dae90f8cce313b1119ec9d3e748e7c88ad336ce0fa1cde5857bfc"
     },
     {
       "path": "lib/services/rom_database_service.dart",
@@ -168,12 +173,12 @@
     {
       "path": "pubspec.yaml",
       "base_normalized_sha256": "8045839645a494ff6851027b0b271cb6527e4ffc986ca8f93a2e2d716a78d6ef",
-      "result_normalized_sha256": "f90a1be0ea22ec548773def0f04a903680f922cdbd31a3016b66586546f460d1"
+      "result_normalized_sha256": "d288aedb3ee637c669eab1348904bb76b6e5850ec299877deab0feca2bd3cf60"
     },
     {
       "path": "test/debrid/debrid_failure_details_test.dart",
       "base_normalized_sha256": null,
-      "result_normalized_sha256": "9ffdacf9c046f94eb9e535fa19d8c74b3a21f112d8eb63c658e2dbf6ba888406"
+      "result_normalized_sha256": "aa1f0acad79fb27b87601f9d1f87d0309aca704afde5da534fa48060a3d53f96"
     },
     {
       "path": "test/debrid/debrid_service_test.dart",
@@ -233,7 +238,7 @@
     {
       "path": "test/remote_zip_service_test.dart",
       "base_normalized_sha256": null,
-      "result_normalized_sha256": "f8a39f85edefe88fc8b0013b4f62c026b28bed15b310318520b16f135d3b8ce4"
+      "result_normalized_sha256": "bdb5ba1b3b0ca847849417bad45152abbc40bc80eea4b747f122b7ceecfc0c8f"
     },
     {
       "path": "test/skraper/rom_identification_dialog_test.dart",

@@ -1,4 +1,4 @@
-name: NOMROM Windows TorBox collection ZIP candidate
+name: NOMROM Windows TorBox ZIP compatibility candidate
 
 on:
   workflow_dispatch:
