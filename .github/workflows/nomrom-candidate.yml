@@ -1,4 +1,4 @@
-name: NOMROM Windows TorBox compatibility candidate
+name: NOMROM Windows TorBox file selection candidate
 
 on:
   workflow_dispatch:

@@ -286,6 +286,82 @@ new file mode 100644
 +package verification and native smoke run do not replace interactive installer
 +or live-service acceptance. Publication still requires the existing publisher
 +key and a signed feed; these source changes do not publish an in-app update.
+diff --git a/TORBOX-FILE-SELECTION.txt b/TORBOX-FILE-SELECTION.txt
+new file mode 100644
+--- /dev/null
++++ b/TORBOX-FILE-SELECTION.txt
+@@ -0,0 +1,71 @@
++NOMROM 1.10.5+26 — TorBox collection file selection and local diagnostics
++Copyright (c) Mark Mateo. Distributed under the repository's MIT license.
++
++WHY THIS UPDATE EXISTS
++
++Fresh MiNERVA selections still failed with FILE_NOT_FOUND in 1.10.4. Review
++reproduced a compatibility gap: strict path matching rejected a catalog file
++when TorBox used a different enclosing folder, even if the filename matched.
++The affected account's actual TorBox response has not been captured, so this
++reproduction is not proof that it explains every reported failure.
++
++FILE SELECTION
++
++The resolver can read an optional proof from the existing local catalog. It
++requires a valid torrent hash, a complete contiguous member index, consistent
++duplicate rows, safe relative paths, bounded nonnegative sizes, and an exact
++selected index/path/positive-size tuple. Raw filename/size uniqueness and
++once-decoded filename/size uniqueness are checked separately. The lookup uses
++the existing torrent_infohash index, has a three-second wait limit, and makes
++no extra account or network request. No proof is cached across catalog updates.
++
++TorBox's ordinary path matching remains available. When that cannot find a
++file, the new filename fallback requires a proof bound to the exact request,
++the complete provider file count, unique valid provider IDs, matching summed
++file bytes and top-level torrent bytes, and an exact unique filename and size.
++Conflicting name and short_name basenames do not qualify for this fallback.
++The provider's file ID is used to request the link. Catalog array positions,
++the torrent's display name and backend download paths are not file identities.
++
++Literal paths and filenames are preferred before the once-decoded pass.
++Literal plus signs remain plus signs. Malformed percent escapes remain literal
++for matching; both Dart exception forms are handled. Pause, cancellation and
++credential changes suppress late results across the optional catalog lookup.
++
++COPY DETAILS
++
++Failed TorBox file-selection and download-link requests can carry a small,
++local diagnostic report. Downloads exposes a Copy details icon when this
++report is available. Copying does not upload, retry, or start a download.
++
++The report includes the app version, failure stage/code, selected relative
++catalog path, expected bytes, file/readiness counts, collection checks and up
++to five relevant file basenames with sizes and the provider's zipped flag.
++It omits provider directories, account/torrent IDs, URLs, magnets, raw response
++bodies and credentials. The current request's credential is removed before
++details reach task storage; malformed/encoded text fails closed for privacy.
++Both storage and copied reports are bounded to 4 KiB. A versioned envelope
++uses the existing error database column; legacy plain errors remain readable.
++Retries, cancellation and unrelated failures clear stale details. Existing
++Waiting for debrid / Check again behavior from 1.10.4 is preserved.
++
++VERIFICATION AND LIMITS
++
++Focused fixtures cover changed folders, exact revision/size selection,
++ambiguous names, incomplete collections, malformed/duplicate IDs, total-size
++mismatches, encoded/literal filenames, diagnostics redaction and persistence,
++clipboard behavior, and task lifecycle races. Read-only catalog probes cover
++the referenced GameCube, Xbox and New Nintendo 3DS collections. These probes
++validate metadata; no ROM content or authenticated TorBox response was used.
++
++The delivered verification report records the actual Windows analyzer/test,
++release build, installer/portable package, signed-update regression and native
++smoke results. It also records the source snapshot from the same Windows run.
++Live TorBox acceptance and an interactive installer upgrade remain separate
++from those automated checks. If a download still fails, use Downloads → Copy
++details and share the copied report to identify the actual returned file list.
++
++The original updater public configuration, existing database schema,
++Windows features and prior Skraper integration remain in this candidate.
++No replacement publisher public key was supplied. No release or update feed
++is published by building or packaging this candidate.
 diff --git a/WINDOWS-CANDIDATE.txt b/WINDOWS-CANDIDATE.txt
 new file mode 100644
 --- /dev/null
@@ -309,10 +385,655 @@ new file mode 100644
 +
 +This preparation note does not claim a successful native build. The final
 +Windows verification report records the actual run and artifact results.
+diff --git a/lib/models/debrid_failure_details.dart b/lib/models/debrid_failure_details.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/models/debrid_failure_details.dart
+@@ -0,0 +1,574 @@
++import 'dart:convert';
++
++enum DebridFailureStage { fileSelection, downloadLink }
++
++enum DebridDiagnosticCheck {
++  torrentIdentityValidated,
++  catalogProofAvailable,
++  collectionFileCountMatches,
++  collectionTotalSizeMatches,
++  providerFileIdsUnique,
++  catalogNameAndSizeUnique,
++}
++
++/// An allowlisted file description. Provider directories never leave this DTO.
++class DebridDiagnosticFile {
++  final String? name;
++  final String? shortName;
++  final int? size;
++  final bool? zipped;
++  final bool nameHadDirectories;
++
++  factory DebridDiagnosticFile({
++    String? name,
++    String? shortName,
++    int? size,
++    bool? zipped,
++  }) => DebridDiagnosticFile._(
++    name: _basename(name),
++    shortName: _basename(shortName),
++    size: _positive(size),
++    zipped: zipped,
++    nameHadDirectories:
++        name != null && _decoded(name).contains(RegExp(r'[/\\]')),
++  );
++
++  const DebridDiagnosticFile._({
++    this.name,
++    this.shortName,
++    this.size,
++    this.zipped,
++    this.nameHadDirectories = false,
++  });
++
++  DebridDiagnosticFile _sanitized(String key) => DebridDiagnosticFile._(
++    name: _basename(name, key: key),
++    shortName: _basename(shortName, key: key),
++    size: size,
++    zipped: zipped,
++    nameHadDirectories: nameHadDirectories,
++  );
++
++  Map<String, Object?> _toJson() => {
++    'name': name,
++    'shortName': shortName,
++    'size': size,
++    'zipped': zipped,
++    'nameHadDirectories': nameHadDirectories,
++  };
++}
++
++/// Small local evidence, never a response dump. The resolver must additionally
++/// call sanitized(apiKey) before a failure reaches persistence or the UI.
++class DebridFailureDetails {
++  static const schemaVersion = 1;
++  static const maxEncodedBytes = 4096;
++  static const maxCandidates = 5;
++  // Leaves room for the existing 500-character message and storage envelope.
++  static const _detailsBudget = 2000;
++
++  final DebridFailureStage stage;
++  final String code;
++  final String? requestedPath;
++  final int? expectedSize;
++  final int providerFileCount;
++  final int usableFileCount;
++  final int zippedFileCount;
++  final bool? downloadPresent;
++  final bool? downloadFinished;
++  final String? downloadState;
++  final Map<DebridDiagnosticCheck, bool> checks;
++  final List<DebridDiagnosticFile> candidates;
++  final int omittedCandidateCount;
++
++  const DebridFailureDetails._({
++    required this.stage,
++    required this.code,
++    required this.requestedPath,
++    required this.expectedSize,
++    required this.providerFileCount,
++    required this.usableFileCount,
++    required this.zippedFileCount,
++    required this.downloadPresent,
++    required this.downloadFinished,
++    required this.downloadState,
++    required this.checks,
++    required this.candidates,
++    required this.omittedCandidateCount,
++  });
++
++  factory DebridFailureDetails.torbox({
++    required DebridFailureStage stage,
++    required String code,
++    required String? requestedPath,
++    required int expectedSize,
++    required int providerFileCount,
++    required Iterable<DebridDiagnosticFile> files,
++    bool? downloadPresent,
++    bool? downloadFinished,
++    String? downloadState,
++    Map<DebridDiagnosticCheck, bool> checks = const {},
++  }) {
++    final path = _relativePath(requestedPath);
++    final selectedName = _basename(path);
++    final sample = <({int rank, int order, DebridDiagnosticFile file})>[];
++    var order = 0;
++    var usable = 0;
++    var zipped = 0;
++    var nearby = 0;
++    for (final file in files) {
++      if ((file.name != null || file.shortName != null) && file.size != null) {
++        usable++;
++      }
++      if (file.zipped == true) zipped++;
++      final rank = _candidateRank(selectedName, file);
++      if (rank != null) {
++        nearby++;
++        sample.add((rank: rank, order: order, file: file));
++        sample.sort((a, b) {
++          final rank = a.rank.compareTo(b.rank);
++          return rank != 0 ? rank : a.order.compareTo(b.order);
++        });
++        if (sample.length > maxCandidates) sample.removeLast();
++      }
++      order++;
++    }
++    return DebridFailureDetails._(
++      stage: stage,
++      code: _code(code),
++      requestedPath: path,
++      expectedSize: _positive(expectedSize),
++      providerFileCount: _count(providerFileCount),
++      usableFileCount: usable,
++      zippedFileCount: zipped,
++      downloadPresent: downloadPresent,
++      downloadFinished: downloadFinished,
++      downloadState: _state(downloadState),
++      checks: Map.unmodifiable(checks),
++      candidates: List.unmodifiable(sample.map((item) => item.file)),
++      omittedCandidateCount: nearby - sample.length,
++    )._bounded();
++  }
++
++  /// Called by the central resolver using the credential for this exact attempt.
++  DebridFailureDetails? sanitized(String apiKey) => _copy(
++    code: _code(_redact(code, apiKey)),
++    requestedPath: _relativePath(requestedPath, key: apiKey),
++    candidates: candidates.map((file) => file._sanitized(apiKey)).toList(),
++  )._bounded();
++
++  DebridFailureDetails _copy({
++    String? code,
++    required String? requestedPath,
++    required List<DebridDiagnosticFile> candidates,
++    int? omittedCandidateCount,
++  }) => DebridFailureDetails._(
++    stage: stage,
++    code: code ?? this.code,
++    requestedPath: requestedPath,
++    expectedSize: expectedSize,
++    providerFileCount: providerFileCount,
++    usableFileCount: usableFileCount,
++    zippedFileCount: zippedFileCount,
++    downloadPresent: downloadPresent,
++    downloadFinished: downloadFinished,
++    downloadState: downloadState,
++    checks: checks,
++    candidates: List.unmodifiable(candidates),
++    omittedCandidateCount: omittedCandidateCount ?? this.omittedCandidateCount,
++  );
++
++  DebridFailureDetails _bounded() {
++    var result = this;
++    while (utf8.encode(jsonEncode(result._toJson())).length > _detailsBudget) {
++      if (result.candidates.isNotEmpty) {
++        result = result._copy(
++          requestedPath: result.requestedPath,
++          candidates: result.candidates.sublist(
++            0,
++            result.candidates.length - 1,
++          ),
++          omittedCandidateCount: result.omittedCandidateCount + 1,
++        );
++      } else {
++        result = result._copy(requestedPath: null, candidates: const []);
++        break;
++      }
++    }
++    return result;
++  }
++
++  Map<String, Object?> _toJson() => {
++    'version': schemaVersion,
++    'provider': 'torbox',
++    'stage': stage.name,
++    'code': code,
++    'requestedPath': requestedPath,
++    'expectedSize': expectedSize,
++    'providerFileCount': providerFileCount,
++    'usableFileCount': usableFileCount,
++    'zippedFileCount': zippedFileCount,
++    'downloadPresent': downloadPresent,
++    'downloadFinished': downloadFinished,
++    'downloadState': downloadState,
++    'checks': {for (final check in checks.entries) check.key.name: check.value},
++    'candidates': candidates.map((file) => file._toJson()).toList(),
++    'omittedCandidateCount': omittedCandidateCount,
++  };
++
++  static DebridFailureDetails? _fromJson(Object? value) {
++    if (value is! Map<String, dynamic> ||
++        value['version'] != schemaVersion ||
++        value['provider'] != 'torbox') {
++      return null;
++    }
++    final stages = DebridFailureStage.values.where(
++      (stage) => stage.name == value['stage'],
++    );
++    if (stages.length != 1 ||
++        value['code'] is! String ||
++        _code(value['code'] as String) != value['code'] ||
++        value['candidates'] is! List ||
++        (value['candidates'] as List).length > maxCandidates) {
++      return null;
++    }
++    final candidates = <DebridDiagnosticFile>[];
++    for (final raw in value['candidates'] as List) {
++      if (raw is! Map<String, dynamic>) return null;
++      candidates.add(
++        DebridDiagnosticFile._(
++          name: _basename(raw['name'] is String ? raw['name'] as String : null),
++          shortName: _basename(
++            raw['shortName'] is String ? raw['shortName'] as String : null,
++          ),
++          size: _positive(raw['size'] is int ? raw['size'] as int : null),
++          zipped: raw['zipped'] is bool ? raw['zipped'] as bool : null,
++          nameHadDirectories: raw['nameHadDirectories'] == true,
++        ),
++      );
++    }
++    final checks = <DebridDiagnosticCheck, bool>{};
++    final rawChecks = value['checks'];
++    if (rawChecks is Map<String, dynamic>) {
++      for (final check in DebridDiagnosticCheck.values) {
++        if (rawChecks[check.name] is bool) {
++          checks[check] = rawChecks[check.name] as bool;
++        }
++      }
++    }
++    return DebridFailureDetails._(
++      stage: stages.single,
++      code: value['code'] as String,
++      requestedPath: _relativePath(
++        value['requestedPath'] is String
++            ? value['requestedPath'] as String
++            : null,
++      ),
++      expectedSize: _positive(
++        value['expectedSize'] is int ? value['expectedSize'] as int : null,
++      ),
++      providerFileCount: _count(value['providerFileCount']),
++      usableFileCount: _count(value['usableFileCount']),
++      zippedFileCount: _count(value['zippedFileCount']),
++      downloadPresent: value['downloadPresent'] is bool
++          ? value['downloadPresent'] as bool
++          : null,
++      downloadFinished: value['downloadFinished'] is bool
++          ? value['downloadFinished'] as bool
++          : null,
++      downloadState: _state(
++        value['downloadState'] is String
++            ? value['downloadState'] as String
++            : null,
++      ),
++      checks: Map.unmodifiable(checks),
++      candidates: List.unmodifiable(candidates),
++      omittedCandidateCount: _count(value['omittedCandidateCount']),
++    )._bounded();
++  }
++
++  /// Human-readable, bounded text only; no raw API object or source URL.
++  String toReport({String? appVersion}) {
++    final version =
++        appVersion != null &&
++            RegExp(r'^[0-9A-Za-z.+_-]{1,40}$').hasMatch(appVersion)
++        ? '\nApp version: $appVersion'
++        : '\nApp version: unknown';
++    String yesNo(bool? value) => value == null ? 'unknown' : '$value';
++    final lines = <String>[
++      'NOMROM download diagnostics v$schemaVersion$version',
++      'Provider: TorBox',
++      'Stage: ${stage == DebridFailureStage.fileSelection ? 'file selection' : 'download link'}',
++      'Code: $code',
++      'Selected catalog path: ${requestedPath ?? '[unavailable]'}',
++      'Expected bytes: ${expectedSize ?? 'unknown'}',
++      'Provider files: $providerFileCount; usable: $usableFileCount; marked zipped: $zippedFileCount',
++      'Present: ${yesNo(downloadPresent)}; finished: ${yesNo(downloadFinished)}; state: ${downloadState ?? 'unknown'}',
++      for (final check in checks.entries) '${check.key.name}: ${check.value}',
++      'Nearby file sample: ${candidates.length}; additional matches omitted: $omittedCandidateCount',
++      for (var i = 0; i < candidates.length; i++)
++        '${i + 1}. name: ${candidates[i].name ?? '[unavailable]'}; short name: ${candidates[i].shortName ?? '[unavailable]'}; bytes: ${candidates[i].size ?? 'unknown'}; zipped: ${yesNo(candidates[i].zipped)}; name had directories: ${candidates[i].nameHadDirectories}',
++      'Provider directories, account details, links and credentials are omitted.',
++    ];
++    return _utf8Bound(lines.join('\n'), maxEncodedBytes);
++  }
++}
++
++/// Stores optional details in the existing error TEXT column. Callers still see
++/// a normal error message, including the existing CACHING_TIMEOUT marker.
++class DownloadFailureStorage {
++  static const prefix = 'NOMROM_DOWNLOAD_ERROR_V1\n';
++
++  static String? encode(String? message, DebridFailureDetails? diagnostics) {
++    if (message == null || diagnostics == null) return message;
++    final safeMessage = _safeMessage(message);
++    final value =
++        '$prefix${jsonEncode({'version': 1, 'message': safeMessage, 'diagnostics': diagnostics._bounded()._toJson()})}';
++    return utf8.encode(value).length <= DebridFailureDetails.maxEncodedBytes
++        ? value
++        : safeMessage;
++  }
++
++  static ({String? message, DebridFailureDetails? diagnostics}) decode(
++    String? value,
++  ) {
++    if (value == null || !value.startsWith('NOMROM_DOWNLOAD_ERROR_')) {
++      return (message: value, diagnostics: null);
++    }
++    const invalid = (
++      message: 'Download failed. Please retry.',
++      diagnostics: null,
++    );
++    if (!value.startsWith(prefix) ||
++        value.length > DebridFailureDetails.maxEncodedBytes ||
++        utf8.encode(value).length > DebridFailureDetails.maxEncodedBytes) {
++      return invalid;
++    }
++    try {
++      final decoded = jsonDecode(value.substring(prefix.length));
++      if (decoded is! Map<String, dynamic> ||
++          decoded['version'] != 1 ||
++          decoded['message'] is! String) {
++        return invalid;
++      }
++      return (
++        message: _safeMessage(decoded['message'] as String),
++        diagnostics: DebridFailureDetails._fromJson(decoded['diagnostics']),
++      );
++    } catch (_) {
++      return invalid;
++    }
++  }
++}
++
++final _controls = RegExp(
++  r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]',
++);
++final _unsafeText = RegExp(
++  r'[a-z][a-z0-9+.-]*://|(?:magnet|file|s3):|bearer\s|[?&#](?:token|auth|key|api_key)=',
++  caseSensitive: false,
++);
++
++String _redact(String value, String key) {
++  var result = value
++      .replaceAll(RegExp(r'\x1b\[[0-?]*[ -/]*[@-~]'), '')
++      .replaceAll(_controls, '');
++  if (key.isNotEmpty) {
++    final decodedKey = _decodedForSafety(key);
++    final values = {key};
++    if (decodedKey != null) values.add(decodedKey);
++    // A provider basename can retain only a credential's last path component.
++    // Over-redact those components too if a synthetic/unusual key contains a
++    // separator; ordinary API keys remain one value.
++    final parts = values.expand((value) => value.split(RegExp(r'[/\\]')));
++    final secrets = {
++      for (final value in [...values, ...parts])
++        if (value.isNotEmpty) ...{
++          value,
++          Uri.encodeComponent(value),
++          Uri.encodeQueryComponent(value),
++        },
++    }.toList()..sort((a, b) => b.length.compareTo(a.length));
++    for (final secret in secrets) {
++      result = result.replaceAll(
++        RegExp(RegExp.escape(secret), caseSensitive: false),
++        '[redacted]',
++      );
++    }
++  }
++  return result;
++}
++
++String? _basename(String? value, {String key = ''}) {
++  if (value == null || value.length > 16384) return null;
++  final decoded = _decodedForSafety(value);
++  if (decoded == null) return null;
++  final clean = _redact(decoded, key).trim();
++  if (_unsafeText.hasMatch(clean)) return null;
++  final base = clean.replaceAll('\\', '/').split('/').last.trim();
++  if (base.isEmpty ||
++      base == '.' ||
++      base == '..' ||
++      base.contains(':') ||
++      base.runes.length > 160) {
++    return null;
++  }
++  return base;
++}
++
++String? _relativePath(String? value, {String key = ''}) {
++  if (value == null || value.length > 16384) return null;
++  final decodedValue = _decodedForSafety(value);
++  if (decodedValue == null) return null;
++  final clean = _redact(decodedValue, key).trim().replaceAll('\\', '/');
++  if (clean.isEmpty ||
++      clean.startsWith('/') ||
++      clean.contains(':') ||
++      _unsafeText.hasMatch(clean)) {
++    return null;
++  }
++  final pieces = clean.split('/');
++  if (pieces.any((piece) => piece.isEmpty || piece == '.' || piece == '..')) {
++    return null;
++  }
++  if (clean.runes.length > 300) return _basename(clean, key: key);
++  return clean;
++}
++
++int? _positive(int? value) =>
++    value != null && value > 0 && value <= 0x1fffffffffffff ? value : null;
++int _count(Object? value) =>
++    value is int && value >= 0 && value <= 0x1fffffffffffff ? value : 0;
++String _code(String value) =>
++    RegExp(r'^[A-Z0-9_]{1,64}$').hasMatch(value) ? value : 'UNKNOWN_ERROR';
++String? _state(String? value) {
++  if (value == null) return null;
++  final normalized = value.toLowerCase();
++  return const {
++        'cached',
++        'completed',
++        'downloading',
++        'uploading',
++        'seeding',
++        'paused',
++        'stalled',
++        'queued',
++        'checking',
++        'processing',
++        'failed',
++        'error',
++        'metadl',
++        'checkingdl',
++        'checkingup',
++        'stalleddl',
++        'stalledup',
++        'queueddl',
++        'queuedup',
++      }.contains(normalized)
++      ? normalized
++      : 'other';
++}
++
++String _decoded(String value) {
++  try {
++    return Uri.decodeComponent(value);
++  } catch (_) {
++    return value;
++  }
++}
++
++// Only for privacy filtering, never for choosing a torrent member. Nested
++// escaping must not smuggle a URL, absolute path or credential into a report.
++String? _decodedForSafety(String value) {
++  var current = value;
++  for (var i = 0; i < 4; i++) {
++    final String next;
++    try {
++      next = Uri.decodeComponent(current);
++    } on FormatException {
++      return RegExp(r'%[0-9a-fA-F]{2}').hasMatch(current) ? null : current;
++    } on ArgumentError {
++      return RegExp(r'%[0-9a-fA-F]{2}').hasMatch(current) ? null : current;
++    }
++    if (next == current) return current;
++    current = next;
++  }
++  // Unfinished escaping is not useful enough to risk an obscured credential.
++  return RegExp(r'%[0-9a-fA-F]{2}').hasMatch(current) ? null : current;
++}
++
++int? _candidateRank(String? selected, DebridDiagnosticFile file) {
++  if (selected != null) {
++    final expected = selected.toLowerCase();
++    final decoded = _decoded(expected);
++    for (final name in [file.name, file.shortName].whereType<String>()) {
++      if (name.toLowerCase() == expected) return 0;
++      if (_decoded(name.toLowerCase()) == decoded) return 1;
++      Set<String> words(String text) => RegExp(r'[a-z0-9]{3,}')
++          .allMatches(text)
++          .map((m) => m.group(0)!)
++          .where(
++            (word) => !const {
++              'zip',
++              'iso',
++              'bin',
++              'rom',
++              'rvz',
++              'nkit',
++              'usa',
++              'europe',
++              'japan',
++              'rev',
++              'disc',
++              'game',
++            }.contains(word),
++          )
++          .toSet();
++      final wanted = words(decoded);
++      if (wanted.isNotEmpty &&
++          wanted.intersection(words(_decoded(name.toLowerCase()))).length >=
++              (wanted.length == 1 ? 1 : 2)) {
++        return 2;
++      }
++    }
++  }
++  return file.zipped == true && (file.name != null || file.shortName != null)
++      ? 3
++      : null;
++}
++
++String _safeMessage(String value) {
++  final message = (_decodedForSafety(value) ?? 'Download failed. Please retry.')
++      .replaceAll(RegExp(r'\x1b\[[0-?]*[ -/]*[@-~]'), '')
++      .replaceAll(RegExp(r'[\t\n\r\f\v]'), ' ')
++      .replaceAll(_controls, '')
++      .replaceAll(
++        RegExp(
++          r'(?:[a-z][a-z0-9+.-]*://|magnet:)[^\s<>]+',
++          caseSensitive: false,
++        ),
++        '[link omitted]',
++      )
++      .replaceAll(
++        RegExp(r'Bearer\s+[^\s,;]+', caseSensitive: false),
++        'Bearer [redacted]',
++      )
++      .trim();
++  return message.isEmpty
++      ? 'Download failed. Please retry.'
++      : _utf8Bound(message, 1500);
++}
++
++String _utf8Bound(String value, int limit) {
++  if (utf8.encode(value).length <= limit) return value;
++  final out = StringBuffer();
++  var length = 0;
++  for (final rune in value.runes) {
++    final next = String.fromCharCode(rune);
++    final bytes = utf8.encode(next).length;
++    if (length + bytes > limit - 3) break;
++    out.write(next);
++    length += bytes;
++  }
++  return '$out…';
++}
 diff --git a/lib/models/download_task.dart b/lib/models/download_task.dart
 --- a/lib/models/download_task.dart
 +++ b/lib/models/download_task.dart
-@@ -195,19 +195,29 @@
+@@ -1,4 +1,5 @@
+ import 'download_link.dart';
++import 'debrid_failure_details.dart';
+ 
+ enum DownloadStatus {
+   pending,
+@@ -23,6 +24,7 @@
+   final int bytesPerSecond;
+   final String? filePath;
+   final String? error;
++  final DebridFailureDetails? diagnostics;
+   final DateTime createdAt;
+   final DateTime? completedAt;
+   final bool hiddenFromHistory;
+@@ -54,6 +56,7 @@
+     this.bytesPerSecond = 0,
+     this.filePath,
+     this.error,
++    this.diagnostics,
+     required this.createdAt,
+     this.completedAt,
+     this.hiddenFromHistory = false,
+@@ -76,6 +79,7 @@
+     int? bytesPerSecond,
+     String? filePath,
+     String? error,
++    DebridFailureDetails? diagnostics,
+     DateTime? completedAt,
+     bool? hiddenFromHistory,
+     String? groupId,
+@@ -101,6 +105,8 @@
+       bytesPerSecond: bytesPerSecond ?? this.bytesPerSecond,
+       filePath: filePath ?? this.filePath,
+       error: error,
++      // Details belong to this exact failure, never to a later retry or error.
++      diagnostics: error == null ? null : diagnostics,
+       createdAt: createdAt,
+       completedAt: completedAt ?? this.completedAt,
+       hiddenFromHistory: hiddenFromHistory ?? this.hiddenFromHistory,
+@@ -142,7 +148,7 @@
+       'downloaded_bytes': downloadedBytes,
+       'total_bytes': totalBytes,
+       'file_path': filePath,
+-      'error': error,
++      'error': DownloadFailureStorage.encode(error, diagnostics),
+       'created_at': createdAt.millisecondsSinceEpoch,
+       'completed_at': completedAt?.millisecondsSinceEpoch,
+       'hidden_from_history': hiddenFromHistory ? 1 : 0,
+@@ -154,6 +160,7 @@
+   }
+ 
+   factory DownloadTask.fromMap(Map<String, dynamic> map) {
++    final failure = DownloadFailureStorage.decode(map['error'] as String?);
+     return DownloadTask(
+       id: map['id'] as String,
+       slug: map['slug'] as String,
+@@ -182,7 +189,8 @@
+       downloadedBytes: (map['downloaded_bytes'] as int?) ?? 0,
+       totalBytes: (map['total_bytes'] as int?) ?? 0,
+       filePath: map['file_path'] as String?,
+-      error: map['error'] as String?,
++      error: failure.message,
++      diagnostics: failure.diagnostics,
+       createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
+       completedAt: map['completed_at'] != null
+           ? DateTime.fromMillisecondsSinceEpoch(map['completed_at'] as int)
+@@ -195,19 +203,29 @@
      );
    }
  
@@ -344,10 +1065,193 @@ diff --git a/lib/models/download_task.dart b/lib/models/download_task.dart
        case DownloadStatus.extracting:
          return 'Extracting...';
        case DownloadStatus.completed:
+diff --git a/lib/models/torrent_file_selection_proof.dart b/lib/models/torrent_file_selection_proof.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/models/torrent_file_selection_proof.dart
+@@ -0,0 +1,169 @@
++import 'package:path/path.dart' as p;
++
++/// One file from the catalog's torrent member list, before validation.
++final class TorrentFileIdentity {
++  const TorrentFileIdentity({
++    required this.index,
++    required this.path,
++    required this.size,
++  });
++
++  final int index;
++  final String path;
++  final int size;
++}
++
++/// Catalog evidence for identifying a file when a provider changes its path.
++///
++/// This does not itself establish that the provider returned the same complete
++/// collection. The provider must independently check its torrent identity,
++/// member count and byte totals before using either uniqueness flag.
++final class TorrentFileSelectionProof {
++  const TorrentFileSelectionProof._({
++    required this.infohash,
++    required this.fileIndex,
++    required this.filePath,
++    required this.expectedSize,
++    required this.fileCount,
++    required this.totalSize,
++    required this.uniqueFilename,
++    required this.uniqueDecodedFilename,
++  });
++
++  final String infohash;
++  final int fileIndex;
++
++  /// Canonical catalog path, without URI decoding.
++  final String filePath;
++  final int expectedSize;
++  final int fileCount;
++  final int totalSize;
++  final bool uniqueFilename;
++  final bool uniqueDecodedFilename;
++
++  /// Returns no proof for incomplete, conflicting or malformed catalog data.
++  static TorrentFileSelectionProof? tryCreate({
++    required String infohash,
++    required int fileIndex,
++    required String filePath,
++    required int expectedSize,
++    required Iterable<TorrentFileIdentity> members,
++  }) {
++    if (!RegExp(r'^[a-fA-F0-9]{40}$').hasMatch(infohash) ||
++        !_boundedInteger(fileIndex) ||
++        !_boundedInteger(expectedSize) ||
++        expectedSize == 0 ||
++        !_safeRelativePath(filePath) ||
++        !_safeRelativePath(filePath, decode: true)) {
++      return null;
++    }
++
++    final selectedPath = normalizeTorrentFilePath(filePath);
++    final byIndex = <int, TorrentFileIdentity>{};
++    var totalSize = 0;
++    for (final member in members) {
++      if (!_boundedInteger(member.index) ||
++          !_boundedInteger(member.size) ||
++          !_safeRelativePath(member.path) ||
++          !_safeRelativePath(member.path, decode: true)) {
++        return null;
++      }
++      final path = normalizeTorrentFilePath(member.path);
++      final previous = byIndex[member.index];
++      if (previous != null) {
++        if (previous.path != path || previous.size != member.size) return null;
++        continue;
++      }
++      if (member.size > _maxExactInteger - totalSize) return null;
++      totalSize += member.size;
++      byIndex[member.index] = TorrentFileIdentity(
++        index: member.index,
++        path: path,
++        size: member.size,
++      );
++    }
++    if (byIndex.isEmpty) return null;
++    for (var index = 0; index < byIndex.length; index++) {
++      if (!byIndex.containsKey(index)) return null;
++    }
++    final selected = byIndex[fileIndex];
++    if (selected == null ||
++        selected.path != selectedPath ||
++        selected.size != expectedSize) {
++      return null;
++    }
++
++    final filename = p.posix.basename(selectedPath);
++    final decodedFilename = p.posix.basename(
++      normalizeTorrentFilePath(filePath, decode: true),
++    );
++    var rawMatches = 0;
++    var decodedMatches = 0;
++    for (final member in byIndex.values) {
++      if (member.size != expectedSize) continue;
++      if (p.posix.basename(member.path) == filename) rawMatches++;
++      if (p.posix.basename(
++            normalizeTorrentFilePath(member.path, decode: true),
++          ) ==
++          decodedFilename) {
++        decodedMatches++;
++      }
++    }
++
++    return TorrentFileSelectionProof._(
++      infohash: infohash.toLowerCase(),
++      fileIndex: fileIndex,
++      filePath: selectedPath,
++      expectedSize: expectedSize,
++      fileCount: byIndex.length,
++      totalSize: totalSize,
++      uniqueFilename: rawMatches == 1,
++      uniqueDecodedFilename: decodedMatches == 1,
++    );
++  }
++}
++
++// Keep integer comparisons exact on every Dart target, including JSON numbers.
++const _maxExactInteger = 9007199254740991;
++
++bool _boundedInteger(int value) => value >= 0 && value <= _maxExactInteger;
++
++bool _safeRelativePath(String value, {bool decode = false}) {
++  if (decode) value = _decodeOnce(value);
++  final path = value.trim().replaceAll('\\', '/');
++  if (path.isEmpty ||
++      path.startsWith('/') ||
++      path.endsWith('/') ||
++      RegExp(r'^[a-zA-Z]:').hasMatch(path) ||
++      RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
++    return false;
++  }
++  final parts = path.split('/');
++  if (parts.contains('..') || parts.last == '.') return false;
++  final canonical = normalizeTorrentFilePath(path);
++  return canonical != '.' && !RegExp(r'^[a-zA-Z]:').hasMatch(canonical);
++}
++
++String _decodeOnce(String value) {
++  try {
++    return Uri.decodeComponent(value);
++  } on FormatException {
++    // A literal '%' or invalid escape remains an ordinary filename.
++    return value;
++  } on ArgumentError {
++    // The VM reports malformed percent escapes as ArgumentError.
++    return value;
++  }
++}
++
++/// Shared catalog/provider comparison, preserving literal '+' characters.
++/// URI decoding is an explicit second pass, never repeated on decoded output.
++String normalizeTorrentFilePath(String value, {bool decode = false}) {
++  if (decode) value = _decodeOnce(value);
++  final normalized = value.trim().replaceAll('\\', '/');
++  if (normalized.isEmpty) return '';
++  return p.posix
++      .normalize(normalized)
++      .replaceFirst(RegExp(r'^(\./|/)+'), '')
++      .toLowerCase();
++}
 diff --git a/lib/screens/downloads_screen.dart b/lib/screens/downloads_screen.dart
 --- a/lib/screens/downloads_screen.dart
 +++ b/lib/screens/downloads_screen.dart
-@@ -424,13 +424,28 @@
+@@ -1,6 +1,8 @@
+ import 'package:cached_network_image/cached_network_image.dart';
+ import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:package_info_plus/package_info_plus.dart';
+ 
+ import '../services/game_artwork_cache.dart';
+ import '../models/models.dart';
+@@ -424,13 +426,28 @@
              : const Icon(Icons.videogame_asset),
        ),
        title: Text(task.title, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -379,6 +1283,54 @@ diff --git a/lib/screens/downloads_screen.dart b/lib/screens/downloads_screen.da
              IconButton(
                icon: const Icon(Icons.play_arrow),
                tooltip: 'Resume',
+@@ -526,6 +543,33 @@
+     return task.error ?? 'Download failed';
+   }
+ 
++  Future<void> _copyDetails(BuildContext context) async {
++    final details = task.diagnostics;
++    if (details == null) return;
++    String? version;
++    try {
++      final package = await PackageInfo.fromPlatform().timeout(
++        const Duration(seconds: 2),
++      );
++      version = '${package.version}+${package.buildNumber}';
++    } catch (_) {
++      // Diagnostics remain useful when package metadata is unavailable.
++    }
++    if (!context.mounted) return;
++    var message = 'Details copied';
++    try {
++      await Clipboard.setData(
++        ClipboardData(text: details.toReport(appVersion: version)),
++      );
++    } catch (_) {
++      message = 'Could not copy details. Please try again.';
++    }
++    if (!context.mounted) return;
++    ScaffoldMessenger.of(
++      context,
++    ).showSnackBar(SnackBar(content: Text(message)));
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return ListTile(
+@@ -573,6 +617,13 @@
+       trailing: Row(
+         mainAxisSize: MainAxisSize.min,
+         children: [
++          if (task.diagnostics != null)
++            IconButton(
++              key: ValueKey('copy-download-details-${task.id}'),
++              icon: const Icon(Icons.content_copy, size: 18),
++              tooltip: 'Copy details',
++              onPressed: () => _copyDetails(context),
++            ),
+           if (_isAuthRequired)
+             TextButton.icon(
+               icon: const Icon(Icons.lock_open, size: 18),
 diff --git a/lib/screens/settings_screen.dart b/lib/screens/settings_screen.dart
 --- a/lib/screens/settings_screen.dart
 +++ b/lib/screens/settings_screen.dart
@@ -435,7 +1387,31 @@ diff --git a/lib/screens/settings_screen.dart b/lib/screens/settings_screen.dart
 diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debrid_provider.dart
 --- a/lib/services/debrid/debrid_provider.dart
 +++ b/lib/services/debrid/debrid_provider.dart
-@@ -46,6 +46,7 @@
+@@ -1,4 +1,7 @@
+ library;
++
++import '../../models/debrid_failure_details.dart';
++import '../../models/torrent_file_selection_proof.dart';
+ 
+ class DebridProviderInfo {
+   final String id;
+@@ -18,6 +21,7 @@
+   final int fileIndex;
+   final String? filePath;
+   final int expectedSize;
++  final TorrentFileSelectionProof? selectionProof;
+ 
+   const DebridFileRequest({
+     required this.infohash,
+@@ -25,6 +29,7 @@
+     required this.fileIndex,
+     this.filePath,
+     this.expectedSize = 0,
++    this.selectionProof,
+   });
+ }
+ 
+@@ -46,6 +51,7 @@
  
    const DebridCaching({this.progress, this.retryAfter});
  }
@@ -443,7 +1419,7 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
  class DebridNotCached extends DebridResult {
    const DebridNotCached();
  }
-@@ -55,6 +56,9 @@
+@@ -55,15 +61,25 @@
    final bool authError;
    final bool rateLimited;
  
@@ -452,12 +1428,17 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
 +
    /// Retrying cannot help — the poll loop aborts instead of spinning.
    final bool permanent;
++
++  /// Allowlisted evidence, centrally sanitized before reaching a download task.
++  final DebridFailureDetails? diagnostics;
  
-@@ -63,7 +67,10 @@
+   const DebridError(
+     this.message, {
      this.authError = false,
      this.rateLimited = false,
      this.permanent = false,
 +    this.code,
++    this.diagnostics,
    });
 +
 +  String get displayMessage => code == null ? message : '$message ($code)';
@@ -467,13 +1448,15 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
 diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torbox_provider.dart
 --- a/lib/services/debrid/torbox_provider.dart
 +++ b/lib/services/debrid/torbox_provider.dart
-@@ -1,14 +1,15 @@
+@@ -1,14 +1,17 @@
 +import 'dart:convert';
 +
 +import 'package:crypto/crypto.dart';
  import 'package:dio/dio.dart';
  import 'package:path/path.dart' as p;
  
++import '../../models/debrid_failure_details.dart';
++import '../../models/torrent_file_selection_proof.dart';
  import 'debrid_provider.dart';
  
 -/// TorBox (https://torbox.app) debrid provider.
@@ -488,7 +1471,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  class TorboxProvider implements DebridProvider {
    TorboxProvider({Dio? dio})
      : _dio =
-@@ -18,12 +19,17 @@
+@@ -18,12 +21,17 @@
                baseUrl: 'https://api.torbox.app/v1/api',
                connectTimeout: const Duration(seconds: 10),
                receiveTimeout: const Duration(seconds: 30),
@@ -507,7 +1490,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  
    @override
    DebridProviderInfo get info => const DebridProviderInfo(
-@@ -38,7 +44,6 @@
+@@ -38,7 +46,6 @@
  
    Options _auth(String apiKey) => Options(
      headers: {'Authorization': 'Bearer ${apiKey.trim()}'},
@@ -515,7 +1498,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
      validateStatus: (code) => code != null && code >= 200 && code < 600,
    );
  
-@@ -47,30 +52,19 @@
+@@ -47,30 +54,19 @@
      if (!isConfigured(apiKey)) return 'Enter your TorBox API key';
      try {
        final res = await _dio.get('/user/me', options: _auth(apiKey));
@@ -550,7 +1533,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
      } catch (_) {
        return 'TorBox returned an unexpected response. Try again.';
      }
-@@ -81,158 +75,380 @@
+@@ -81,158 +77,548 @@
      DebridFileRequest req, {
      required String apiKey,
    }) async {
@@ -629,7 +1612,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +      if (rawFiles.isEmpty) {
 +        return DebridCaching(progress: progress?.clamp(0.0, 1.0));
 +      }
-+      final selected = _pickFile(rawFiles, req);
++      final selected = _pickFile(rawFiles, req, torrent);
 +      final fileId = _asInt(selected['id']);
 +      if (fileId == null || fileId < 0) {
 +        throw _TorboxRequestFailure(_unexpectedResponse());
@@ -665,7 +1648,17 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 -
 -  Future<Map<String, dynamic>?> _torrentById(int id, String apiKey) async {
 +      final dlError = _responseError(dl);
-+      if (dlError != null) throw _TorboxRequestFailure(dlError);
++      if (dlError != null) {
++        throw _TorboxRequestFailure(
++          _withTorrentDiagnostics(
++            dlError,
++            DebridFailureStage.downloadLink,
++            rawFiles,
++            req,
++            torrent,
++          ),
++        );
++      }
 +      final value = _data(dl);
 +      final uri = value is String ? Uri.tryParse(value) : null;
 +      if (uri == null ||
@@ -897,19 +1890,43 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +
 +  /// Compare paths before basenames. Provider arrays may not use the catalog's
 +  /// ordering; an explicit mismatch must never download an unrelated game.
-+  Map<String, dynamic> _pickFile(List<dynamic> files, DebridFileRequest req) {
++  Map<String, dynamic> _pickFile(
++    List<dynamic> files,
++    DebridFileRequest req,
++    Map<String, dynamic> torrent,
++  ) {
++    _TorboxRequestFailure failure(DebridError error) => _TorboxRequestFailure(
++      _withTorrentDiagnostics(
++        error,
++        DebridFailureStage.fileSelection,
++        files,
++        req,
++        torrent,
++      ),
++    );
 +    final available = files.whereType<Map<String, dynamic>>().toList();
-+    if (available.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
++    if (available.isEmpty) throw failure(_fileNotFound);
 +    final target = req.filePath ?? '';
 +    List<Map<String, dynamic>> candidates;
 +    if (_normalPath(target).isNotEmpty) {
 +      candidates = _pathCandidates(available, target);
 +      if (candidates.isEmpty) {
++        candidates = _provenFilenameCandidates(files, req, torrent);
++      }
++      if (candidates.isEmpty) {
 +        // Some provider responses encode path components. Keep literal names
 +        // authoritative, then try decoding once; '+' is a filename character.
 +        candidates = _pathCandidates(available, target, decode: true);
 +      }
-+      if (candidates.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
++      if (candidates.isEmpty) {
++        candidates = _provenFilenameCandidates(
++          files,
++          req,
++          torrent,
++          decode: true,
++        );
++      }
++      if (candidates.isEmpty) throw failure(_fileNotFound);
 +    } else if (available.length == 1) {
 +      candidates = available;
 +    } else {
@@ -920,7 +1937,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +                .where((file) => _asInt(file['size']) == req.expectedSize)
 +                .toList()
 +          : <Map<String, dynamic>>[];
-+      if (candidates.isEmpty) throw const _TorboxRequestFailure(_fileNotFound);
++      if (candidates.isEmpty) throw failure(_fileNotFound);
 +    }
 +    if (candidates.length > 1 && req.expectedSize > 0) {
 +      final exactSize = candidates
@@ -929,7 +1946,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +      if (exactSize.isNotEmpty) candidates = exactSize;
 +    }
 +    if (candidates.length != 1) {
-+      throw const _TorboxRequestFailure(_fileAmbiguous);
++      throw failure(_fileAmbiguous);
 +    }
 +    final chosen = candidates.single;
 +    final size = _asInt(chosen['size']);
@@ -937,10 +1954,157 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +        size != null &&
 +        size > 0 &&
 +        !_sizesClose(size, req.expectedSize)) {
-+      throw const _TorboxRequestFailure(_fileSizeMismatch);
++      throw failure(_fileSizeMismatch);
 +    }
 +    return chosen;
 +  }
++}
++
++bool _proofMatchesRequest(
++  TorrentFileSelectionProof proof,
++  DebridFileRequest request,
++) =>
++    proof.infohash == request.infohash.trim().toLowerCase() &&
++    proof.fileIndex == request.fileIndex &&
++    proof.filePath == _normalPath(request.filePath ?? '') &&
++    proof.expectedSize == request.expectedSize &&
++    request.expectedSize > 0;
++
++// Keep proof comparisons exact across every Dart target and JSON number form.
++const _maxProofInteger = 9007199254740991;
++
++int? _proofInteger(Object? value) {
++  final number = _asInt(value);
++  return number != null && number >= 0 && number <= _maxProofInteger
++      ? number
++      : null;
++}
++
++({bool idsUnique, int? totalSize}) _providerFileSummary(List<dynamic> files) {
++  final ids = <int>{};
++  var idsUnique = true;
++  var sizesValid = true;
++  var totalSize = 0;
++  for (final file in files) {
++    if (file is! Map<String, dynamic>) {
++      idsUnique = false;
++      sizesValid = false;
++      continue;
++    }
++    final id = _proofInteger(file['id']);
++    if (id == null || !ids.add(id)) idsUnique = false;
++    final size = _proofInteger(file['size']);
++    if (size == null || size > _maxProofInteger - totalSize) {
++      sizesValid = false;
++    } else {
++      totalSize += size;
++    }
++  }
++  return (idsUnique: idsUnique, totalSize: sizesValid ? totalSize : null);
++}
++
++List<Map<String, dynamic>> _provenFilenameCandidates(
++  List<dynamic> files,
++  DebridFileRequest request,
++  Map<String, dynamic> torrent, {
++  bool decode = false,
++}) {
++  final proof = request.selectionProof;
++  if (proof == null ||
++      !_proofMatchesRequest(proof, request) ||
++      !(decode ? proof.uniqueDecodedFilename : proof.uniqueFilename) ||
++      files.length != proof.fileCount ||
++      _proofInteger(torrent['size']) != proof.totalSize) {
++    return const [];
++  }
++  final summary = _providerFileSummary(files);
++  if (!summary.idsUnique || summary.totalSize != proof.totalSize) {
++    return const [];
++  }
++
++  // The complete catalog index proves this filename/size identifies the
++  // selected member. A complete, consistent provider list must independently
++  // identify one file. Provider folder names may be changed by the account;
++  // neither those names nor positional provider-array indexes are identities.
++  final target = p.posix.basename(
++    _normalPath(request.filePath ?? '', decode: decode),
++  );
++  return files.whereType<Map<String, dynamic>>().where((file) {
++    if (_proofInteger(file['size']) != request.expectedSize) return false;
++    String basename(Object? value) {
++      if (value is! String) return '';
++      final path = _normalPath(value, decode: decode);
++      return path.isEmpty ? '' : p.posix.basename(path);
++    }
++
++    final name = basename(file['name']);
++    final shortName = basename(file['short_name']);
++    // A short-name alias cannot override a conflicting filename/revision.
++    if (name.isNotEmpty && shortName.isNotEmpty && name != shortName) {
++      return false;
++    }
++    return (name.isNotEmpty ? name : shortName) == target;
++  }).toList();
++}
++
++DebridError _withTorrentDiagnostics(
++  DebridError error,
++  DebridFailureStage stage,
++  List<dynamic> files,
++  DebridFileRequest request,
++  Map<String, dynamic> torrent,
++) {
++  final proof = request.selectionProof;
++  final summary = _providerFileSummary(files);
++  final checks = <DebridDiagnosticCheck, bool>{
++    DebridDiagnosticCheck.torrentIdentityValidated: true,
++    DebridDiagnosticCheck.catalogProofAvailable:
++        proof != null && _proofMatchesRequest(proof, request),
++    DebridDiagnosticCheck.providerFileIdsUnique: summary.idsUnique,
++    if (proof != null) ...{
++      DebridDiagnosticCheck.collectionFileCountMatches:
++          files.length == proof.fileCount &&
++          files.every((file) => file is Map<String, dynamic>),
++      DebridDiagnosticCheck.collectionTotalSizeMatches:
++          summary.totalSize == proof.totalSize &&
++          _proofInteger(torrent['size']) == proof.totalSize,
++      DebridDiagnosticCheck.catalogNameAndSizeUnique: proof.uniqueFilename,
++    },
++  };
++  return DebridError(
++    error.message,
++    code: error.code,
++    authError: error.authError,
++    rateLimited: error.rateLimited,
++    permanent: error.permanent,
++    diagnostics: DebridFailureDetails.torbox(
++      stage: stage,
++      code: error.code ?? 'PROVIDER_ERROR',
++      requestedPath: request.filePath,
++      expectedSize: request.expectedSize,
++      providerFileCount: files.length,
++      downloadPresent: torrent['download_present'] is bool
++          ? torrent['download_present'] as bool
++          : null,
++      downloadFinished: torrent['download_finished'] is bool
++          ? torrent['download_finished'] as bool
++          : null,
++      downloadState: torrent['download_state'] is String
++          ? torrent['download_state'] as String
++          : null,
++      checks: checks,
++      files: files.whereType<Map<String, dynamic>>().map(
++        (file) => DebridDiagnosticFile(
++          name: file['name'] is String ? file['name'] as String : null,
++          shortName: file['short_name'] is String
++              ? file['short_name'] as String
++              : null,
++          size: _asInt(file['size']),
++          zipped: file['zipped'] is bool ? file['zipped'] as bool : null,
++        ),
++      ),
++    ),
++  );
 +}
 +
 +typedef _TorrentKey = ({String accountFingerprint, String infohash});
@@ -963,7 +2127,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +  permanent: true,
 +);
 +const _fileNotFound = DebridError(
-+  'NOMROM could not match the selected game to an individual file in TorBox. Check the torrent file list in TorBox or choose another source.',
++  'NOMROM could not match the selected game to an individual file in TorBox. In Downloads, choose Copy details for this failed item.',
 +  code: 'FILE_NOT_FOUND',
 +  permanent: true,
 +);
@@ -1019,21 +2183,8 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +  return candidates;
 +}
 +
-+String _normalPath(String value, {bool decode = false}) {
-+  if (decode) {
-+    try {
-+      value = Uri.decodeComponent(value);
-+    } on FormatException {
-+      // A literal '%' or invalid escape remains an ordinary filename.
-+    }
-+  }
-+  final normalized = value.trim().replaceAll('\\', '/');
-+  if (normalized.isEmpty) return '';
-+  return p.posix
-+      .normalize(normalized)
-+      .replaceFirst(RegExp(r'^(\./|/)+'), '')
-+      .toLowerCase();
-+}
++String _normalPath(String value, {bool decode = false}) =>
++    normalizeTorrentFilePath(value, decode: decode);
 +
 +Object? _data(Response res) =>
 +    res.data is Map ? (res.data as Map)['data'] : null;
@@ -1043,7 +2194,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  const _permanentErrorCodes = {
    'ACTIVE_LIMIT',
    'MONTHLY_LIMIT',
-@@ -240,65 +456,149 @@
+@@ -240,65 +626,149 @@
    'DOWNLOAD_TOO_LARGE',
    'INVALID_MAGNET',
    'INVALID_TORRENT',
@@ -1244,7 +2395,15 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 --- a/lib/services/debrid_service.dart
 +++ b/lib/services/debrid_service.dart
-@@ -180,61 +180,205 @@
+@@ -4,6 +4,7 @@
+ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+ 
+ import '../models/models.dart';
++import '../models/torrent_file_selection_proof.dart';
+ import 'credential_storage.dart';
+ import 'debrid/debrid_provider.dart';
+ import 'debrid/debrid_registry.dart';
+@@ -180,61 +181,245 @@
    Future<DownloadLink?> resolveTorrentLink(
      DownloadLink link, {
      void Function(DebridCaching status)? onCaching,
@@ -1321,16 +2480,40 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 +        ),
 +      );
 +    }
++    if (cancelled()) return null;
++    final selectedPath = link.torrentFilePath?.trim().isNotEmpty == true
++        ? link.torrentFilePath!
++        : link.filename;
++    TorrentFileSelectionProof? selectionProof;
++    if (provider.info.id == 'torbox' &&
++        link.torrentFileIndex != null &&
++        link.size > 0 &&
++        selectedPath.isNotEmpty) {
++      try {
++        selectionProof = await _romDb
++            .getTorrentFileSelectionProof(
++              infohash: infohash,
++              fileIndex: link.torrentFileIndex!,
++              filePath: selectedPath,
++              expectedSize: link.size,
++            )
++            .timeout(const Duration(seconds: 3));
++      } catch (_) {
++        // Exact path matching remains available if the optional catalog proof
++        // cannot be read. Never relax filename matching without that proof.
++        selectionProof = null;
++      }
++    }
++    if (cancelled()) return null;
      final req = DebridFileRequest(
        infohash: infohash,
 -      magnet: await magnetForInfohash(_romDb, infohash),
 +      magnet: magnet,
        fileIndex: link.torrentFileIndex ?? 0,
 -      filePath: link.torrentFilePath,
-+      filePath: link.torrentFilePath?.trim().isNotEmpty == true
-+          ? link.torrentFilePath
-+          : link.filename,
++      filePath: selectedPath,
        expectedSize: link.size,
++      selectionProof: selectionProof,
      );
  
      final deadline = DateTime.now().add(overallTimeout);
@@ -1345,6 +2528,7 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 +          '${previous.message} Resolution timed out; try again later.',
 +          code: previous.code ?? 'RESOLUTION_TIMEOUT',
 +          rateLimited: previous.rateLimited,
++          diagnostics: previous.diagnostics,
 +        );
 +      }
 +      return DebridError(
@@ -1443,14 +2627,29 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 +        .trim();
 +    if (message.length > 500) message = '${message.substring(0, 500)}…';
 +    final code = failure.code;
++    final codeContainsCredential =
++        code != null &&
++        {
++          apiKey,
++          Uri.encodeComponent(apiKey),
++          Uri.encodeQueryComponent(apiKey),
++        }.any(
++          (secret) =>
++              secret.isNotEmpty &&
++              code.toLowerCase().contains(secret.toLowerCase()),
++        );
 +    return DebridError(
 +      message.isEmpty ? 'The debrid request failed. Try again.' : message,
 +      authError: failure.authError,
 +      rateLimited: failure.rateLimited,
 +      permanent: failure.permanent,
-+      code: code != null && RegExp(r'^[A-Z0-9_]{1,64}$').hasMatch(code)
++      code:
++          code != null &&
++              !codeContainsCredential &&
++              RegExp(r'^[A-Z0-9_]{1,64}$').hasMatch(code)
 +          ? code
 +          : null,
++      diagnostics: failure.diagnostics?.sanitized(apiKey),
 +    );
 +  }
 +
@@ -1473,7 +2672,11 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 diff --git a/lib/services/download_service.dart b/lib/services/download_service.dart
 --- a/lib/services/download_service.dart
 +++ b/lib/services/download_service.dart
-@@ -14,6 +14,7 @@
+@@ -11,9 +11,11 @@
+ import 'package:uuid/uuid.dart';
+ 
+ import '../models/models.dart';
++import '../models/debrid_failure_details.dart';
  import '../torrent/torrent_api.g.dart';
  import 'database_service.dart';
  import 'debrid_service.dart';
@@ -1481,7 +2684,23 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
  import 'host_adapter.dart';
  import 'internet_archive_auth_manager.dart';
  import 'link_resolver.dart';
-@@ -845,12 +846,37 @@
+@@ -668,6 +670,7 @@
+ 
+     final backfilled = existing.copyWith(
+       error: existing.error,
++      diagnostics: existing.diagnostics,
+       groupId: group.id,
+       groupIndex: member.index,
+       groupTitle: group.title,
+@@ -685,6 +688,7 @@
+     if (active != null) {
+       _activeTasks[backfilled.id] = active.copyWith(
+         error: active.error,
++        diagnostics: active.diagnostics,
+         groupId: group.id,
+         groupIndex: member.index,
+         groupTitle: group.title,
+@@ -845,12 +849,37 @@
        final prefs = getLinkResolverPrefs();
        final debrid = _debrid;
        if (prefs.debridEnabled && debrid != null) {
@@ -1523,7 +2742,7 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
                _pausedTaskIds.contains(task.id) ||
                !_activeTasks.containsKey(task.id)) {
              return;
-@@ -860,11 +886,19 @@
+@@ -860,11 +889,20 @@
              await _startDownload(resolved);
              return;
            }
@@ -1542,10 +2761,11 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
 -              'Not cached on debrid and torrents are disabled',
 +              resolutionFailure?.displayMessage ??
 +                  'The selected debrid provider could not resolve this file. Try again or choose another source.',
++              diagnostics: resolutionFailure?.diagnostics,
              );
              return;
            }
-@@ -1377,13 +1411,29 @@
+@@ -1377,13 +1415,29 @@
    /// Try to turn a torrent [task] into an HTTP download via the configured
    /// debrid provider. Shows "Resolving/Caching on debrid…" while polling.
    /// Returns null to fall back to P2P, or to abort after cancel/pause.
@@ -1577,7 +2797,7 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
  
      final working = task.copyWith(
        status: DownloadStatus.downloading,
-@@ -1398,13 +1448,16 @@
+@@ -1398,13 +1452,16 @@
      }
      _emit(working);
      await _startForegroundTask(task.title);
@@ -1597,12 +2817,12 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
          final current = _activeTasks[task.id];
          if (current == null) return;
          final updated = current.copyWith(
-@@ -1487,6 +1540,35 @@
-     _emit(updatedTask);
-     await _notifications.updateForTask(updatedTask);
+@@ -1489,8 +1546,45 @@
      await _maybeWritePlaylist(updatedTask);
-+  }
-+
+   }
+ 
+-  Future<void> _failTask(DownloadTask task, String error) async {
+-    final failed = task.copyWith(status: DownloadStatus.failed, error: error);
 +  Future<void> _pauseForDebrid(DownloadTask task) async {
 +    final current = _activeTasks[task.id];
 +    if (_disposed ||
@@ -1630,9 +2850,21 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
 +    _emit(paused);
 +    await _updateNotifications();
 +    unawaited(_processQueue());
-   }
- 
-   Future<void> _failTask(DownloadTask task, String error) async {
++  }
++
++  Future<void> _failTask(
++    DownloadTask task,
++    String error, {
++    DebridFailureDetails? diagnostics,
++  }) async {
++    final failed = task.copyWith(
++      status: DownloadStatus.failed,
++      error: error,
++      diagnostics: diagnostics,
++    );
+     _activeTasks.remove(task.id);
+     _activeCancelTokens.remove(task.id);
+     await _saveDownload(failed);
 diff --git a/lib/services/game_artwork_cache.dart b/lib/services/game_artwork_cache.dart
 --- a/lib/services/game_artwork_cache.dart
 +++ b/lib/services/game_artwork_cache.dart
@@ -2043,6 +3275,62 @@ diff --git a/lib/services/metadata/screenscraper_provider.dart b/lib/services/me
        return response;
      }();
      // Basic accounts permit one request at a time. Retain the actual work as
+diff --git a/lib/services/rom_database_service.dart b/lib/services/rom_database_service.dart
+--- a/lib/services/rom_database_service.dart
++++ b/lib/services/rom_database_service.dart
+@@ -9,6 +9,7 @@
+ import 'package:sqflite/sqflite.dart';
+ 
+ import '../models/models.dart';
++import '../models/torrent_file_selection_proof.dart';
+ import 'catalog_game_index.dart';
+ 
+ /// Catalog schema this build expects. Mirror of
+@@ -870,6 +871,44 @@
+     return TorrentMetadata.fromRow(rows.first);
+   }
+ 
++  /// Builds fresh evidence from all indexed catalog links for one torrent.
++  /// Missing or inconsistent members disable path fallback; no catalog data is
++  /// repaired, downloaded or cached by this read.
++  Future<TorrentFileSelectionProof?> getTorrentFileSelectionProof({
++    required String infohash,
++    required int fileIndex,
++    required String filePath,
++    required int expectedSize,
++  }) async {
++    if (!RegExp(r'^[a-fA-F0-9]{40}$').hasMatch(infohash)) return null;
++    try {
++      final db = await database;
++      final rows = await db.rawQuery(
++        '''SELECT torrent_file_index, torrent_file_path, size
++           FROM links WHERE torrent_infohash = ?''',
++        [infohash.toLowerCase()],
++      );
++      final members = <TorrentFileIdentity>[];
++      for (final row in rows) {
++        final index = row['torrent_file_index'];
++        final path = row['torrent_file_path'];
++        final size = row['size'];
++        if (index is! int || path is! String || size is! int) return null;
++        members.add(TorrentFileIdentity(index: index, path: path, size: size));
++      }
++      return TorrentFileSelectionProof.tryCreate(
++        infohash: infohash,
++        fileIndex: fileIndex,
++        filePath: filePath,
++        expectedSize: expectedSize,
++        members: members,
++      );
++    } on DatabaseException {
++      // Older or replaced catalogs may not expose the complete member schema.
++      return null;
++    }
++  }
++
+   /// The group [slug] belongs to (e.g. its multi-disc set), or null if the
+   /// entry is standalone or the catalog predates grouping. Members are
+   /// ordered by disc index.
 diff --git a/lib/services/skraper/rom_identity_service.dart b/lib/services/skraper/rom_identity_service.dart
 new file mode 100644
 --- /dev/null
@@ -4887,7 +6175,7 @@ diff --git a/pubspec.yaml b/pubspec.yaml
  description: "NOMROM game browser and download library for Windows, macOS and Android"
  publish_to: 'none'
 -version: 1.10.2+23
-+version: 1.10.4+25
++version: 1.10.5+26
  
  environment:
    sdk: ^3.10.1
@@ -4902,94 +6190,689 @@ diff --git a/pubspec.yaml b/pubspec.yaml
  
    # Local database for tracking downloads
    sqflite: ^2.3.2
+diff --git a/test/debrid/debrid_failure_details_test.dart b/test/debrid/debrid_failure_details_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/debrid/debrid_failure_details_test.dart
+@@ -0,0 +1,342 @@
++import 'dart:convert';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/debrid_failure_details.dart';
++import 'package:romgi/models/download_link.dart';
++import 'package:romgi/models/download_task.dart';
++
++DebridFailureDetails _details({
++  String? path =
++      'Redump/Microsoft - Xbox/Halo - Combat Evolved (USA) (Rev 2).zip',
++  Iterable<DebridDiagnosticFile>? files,
++  String code = 'FILE_NOT_FOUND',
++}) => DebridFailureDetails.torbox(
++  stage: DebridFailureStage.fileSelection,
++  code: code,
++  requestedPath: path,
++  expectedSize: 6884752659,
++  providerFileCount: 2780,
++  files:
++      files ??
++      [
++        DebridDiagnosticFile(
++          name:
++              '/srv/private-account/storage/Halo - Combat Evolved (USA) (Rev 2).zip',
++          shortName: 'Halo - Combat Evolved (USA) (Rev 2).zip',
++          size: 6884752659,
++          zipped: false,
++        ),
++      ],
++  downloadPresent: true,
++  downloadFinished: true,
++  downloadState: 'cached',
++  checks: const {
++    DebridDiagnosticCheck.torrentIdentityValidated: true,
++    DebridDiagnosticCheck.catalogProofAvailable: false,
++  },
++);
++
++DownloadTask _task(DebridFailureDetails? details) => DownloadTask(
++  id: 'example',
++  slug: 'example',
++  title: 'Example',
++  platform: 'xbox',
++  createdAt: DateTime(2026),
++  status: DownloadStatus.failed,
++  error: 'The requested pack file was not found. (FILE_NOT_FOUND)',
++  diagnostics: details,
++  link: const DownloadLink(
++    name: 'Halo',
++    type: 'Game',
++    format: 'zip',
++    url: '',
++    filename: 'Halo.zip',
++    host: 'MiNERVA',
++    size: 6884752659,
++    sizeStr: '6.88 GB',
++    sourceUrl: '',
++    torrentInfohash: 'abcdef0123456789abcdef0123456789abcdef01',
++    torrentFileIndex: 893,
++    torrentFilePath: 'Redump/Halo.zip',
++  ),
++);
++
++void main() {
++  test(
++    'captures exact public selection and bounded basename-only evidence',
++    () {
++      final details = _details().sanitized('example-api-key')!;
++      final report = details.toReport(appVersion: '1.10.4+25');
++      expect(report, contains('NOMROM download diagnostics v1'));
++      expect(report, contains('App version: 1.10.4+25'));
++      expect(report, contains('Stage: file selection'));
++      expect(report, contains('Expected bytes: 6884752659'));
++      expect(report, contains('Provider files: 2780'));
++      expect(report, contains('zipped: false'));
++      expect(report, contains('name had directories: true'));
++      expect(report, isNot(contains('/srv/')));
++      expect(report, isNot(contains('private-account')));
++      expect(report, isNot(contains('storage/')));
++      expect(
++        details.candidates.single.name,
++        'Halo - Combat Evolved (USA) (Rev 2).zip',
++      );
++    },
++  );
++
++  test(
++    'redacts credentials, nested URI forms and unsafe provider text before persistence',
++    () {
++      const key = 'API_SECRET_0123456789';
++      final filename = 'Halo $key.zip';
++      final details = _details(
++        path: 'Redump/$filename',
++        code: key,
++        files: [
++          DebridDiagnosticFile(
++            name: '/srv/private-account/\x1b[31m$filename\u202e',
++            shortName: Uri.encodeComponent(Uri.encodeComponent(filename)),
++            size: 100,
++          ),
++          DebridDiagnosticFile(
++            name: 'https://host.invalid/file?token=$key',
++            zipped: true,
++          ),
++          DebridDiagnosticFile(
++            name: Uri.encodeComponent('magnet:?xt=secret'),
++            zipped: true,
++          ),
++          DebridDiagnosticFile(name: 'Bearer $key', zipped: true),
++          DebridDiagnosticFile(
++            name: Uri.encodeComponent(
++              Uri.encodeComponent(r'C:\Users\private-account\Halo.zip'),
++            ),
++            zipped: true,
++          ),
++        ],
++      ).sanitized(key)!;
++      final encoded = DownloadFailureStorage.encode(
++        'Matching failed.',
++        details,
++      )!;
++      final report = details.toReport();
++      for (final value in [encoded, report]) {
++        for (final forbidden in [
++          key,
++          Uri.encodeComponent(key),
++          'https:',
++          'magnet:',
++          'Bearer ',
++          'private-account',
++          '/srv/',
++          r'C:\Users',
++          '\x1b',
++          '\u202e',
++        ]) {
++          expect(value, isNot(contains(forbidden)), reason: forbidden);
++        }
++        expect(value, contains('[redacted]'));
++      }
++      expect(details.code, 'UNKNOWN_ERROR');
++    },
++  );
++
++  test(
++    'rejects absolute, traversal, URI and encoded backend catalog paths',
++    () {
++      for (final path in [
++        '/srv/private-account/Halo.zip',
++        r'C:\Users\name\Halo.zip',
++        r'\\server\share\Halo.zip',
++        '../Halo.zip',
++        'a/../Halo.zip',
++        'https://example.invalid/Halo.zip',
++        'magnet:?xt=secret',
++        Uri.encodeComponent(
++          Uri.encodeComponent('/srv/private-account/Halo.zip'),
++        ),
++      ]) {
++        final details = _details(path: path).sanitized('key')!;
++        expect(details.requestedPath, isNull, reason: path);
++        expect(details.toReport(), isNot(contains('private-account')));
++      }
++    },
++  );
++
++  test(
++    'redacts literal-percent and separator-containing key representations',
++    () {
++      for (final key in [
++        'literal%20percent-key',
++        'private-part/final-secret',
++      ]) {
++        final details = _details(
++          path: 'Catalog/Halo $key.zip',
++          files: [
++            DebridDiagnosticFile(
++              name: '/provider/Halo $key.zip',
++              shortName: Uri.encodeComponent('Halo $key.zip'),
++              size: 10,
++              zipped: true,
++            ),
++          ],
++        ).sanitized(key)!;
++        final output =
++            '${details.toReport()}${DownloadFailureStorage.encode('Failed.', details)}';
++        expect(output, isNot(contains(key)));
++        expect(output, isNot(contains(Uri.decodeComponent(key))));
++        expect(output, isNot(contains('final-secret')));
++      }
++    },
++  );
++
++  test(
++    'mixed malformed and valid escapes cannot conceal a partially encoded key',
++    () {
++      final key = 'SYNTHETIC_${List.filled(54, 'A').join()}';
++      final disguised =
++          'Halo bad%ZZ %53YNTHETIC_${List.filled(54, 'A').join()}.zip';
++      final details = _details(
++        path: disguised,
++        files: [
++          DebridDiagnosticFile(
++            name: disguised,
++            shortName: disguised,
++            size: 10,
++            zipped: true,
++          ),
++        ],
++      ).sanitized(key)!;
++      final encoded = DownloadFailureStorage.encode('Failed.', details)!;
++      final restored = DownloadFailureStorage.decode(encoded).diagnostics!;
++      for (final value in [details.toReport(), encoded, restored.toReport()]) {
++        expect(value, isNot(contains('SYNTHETIC_')));
++        expect(value, isNot(contains('%53YNTHETIC_')));
++        expect(value, isNot(contains(List.filled(54, 'A').join())));
++      }
++      expect(details.requestedPath, isNull);
++      expect(details.candidates, isEmpty);
++    },
++  );
++
++  test(
++    'large lists and unicode names fit both four KiB limits with explicit omissions',
++    () {
++      final details = _details(
++        files: List.generate(
++          1000,
++          (index) => DebridDiagnosticFile(
++            name: 'Halo Combat ${List.filled(70, '界').join()} $index.zip',
++            shortName: 'Halo Combat ${List.filled(70, '界').join()} $index.zip',
++            size: index + 1,
++            zipped: index.isEven,
++          ),
++        ),
++      ).sanitized('key')!;
++      expect(details.candidates.length, lessThanOrEqualTo(5));
++      expect(details.omittedCandidateCount, greaterThan(0));
++      expect(details.usableFileCount, 1000);
++      expect(details.zippedFileCount, 500);
++      final serialized = DownloadFailureStorage.encode(
++        List.filled(500, '界').join(),
++        details,
++      )!;
++      expect(utf8.encode(serialized).length, lessThanOrEqualTo(4096));
++      expect(utf8.encode(details.toReport()).length, lessThanOrEqualTo(4096));
++      expect(DownloadFailureStorage.decode(serialized).diagnostics, isNotNull);
++    },
++  );
++
++  test(
++    'does not sample unrelated collection files or invent unknown state',
++    () {
++      final details = DebridFailureDetails.torbox(
++        stage: DebridFailureStage.downloadLink,
++        code: 'FILE_NOT_FOUND',
++        requestedPath: 'Halo.zip',
++        expectedSize: 10,
++        providerFileCount: 100,
++        downloadState: 'https://secret.invalid/state',
++        files: [DebridDiagnosticFile(name: 'Unrelated Game.zip', size: 10)],
++      ).sanitized('key')!;
++      expect(details.candidates, isEmpty);
++      expect(details.downloadState, 'other');
++      expect(details.toReport(), contains('Stage: download link'));
++      expect(details.toReport(), isNot(contains('Unrelated')));
++    },
++  );
++
++  test(
++    'existing error column roundtrips details while keeping public error plain',
++    () {
++      final original = _task(_details().sanitized('key'));
++      final stored = original.toMap();
++      expect(stored['error'], startsWith(DownloadFailureStorage.prefix));
++      expect(stored.containsKey('diagnostics'), isFalse);
++      final restored = DownloadTask.fromMap(stored);
++      expect(restored.error, original.error);
++      expect(
++        restored.diagnostics!.toReport(),
++        original.diagnostics!.toReport(),
++      );
++      expect(restored.error, isNot(contains('NOMROM_DOWNLOAD_ERROR')));
++      final legacy = DownloadTask.fromMap(_task(null).toMap());
++      expect(legacy.error, original.error);
++      expect(legacy.diagnostics, isNull);
++    },
++  );
++
++  test(
++    'invalid and unknown envelopes fail closed without exposing their contents',
++    () {
++      for (final raw in [
++        '${DownloadFailureStorage.prefix}{not-json-secret',
++        'NOMROM_DOWNLOAD_ERROR_V2\n{"secret":"do-not-display"}',
++        '${DownloadFailureStorage.prefix}${jsonEncode({'version': 1, 'message': 123})}',
++        '${DownloadFailureStorage.prefix}${List.filled(5000, 's').join()}',
++      ]) {
++        final decoded = DownloadFailureStorage.decode(raw);
++        expect(decoded.message, 'Download failed. Please retry.');
++        expect(decoded.diagnostics, isNull);
++      }
++    },
++  );
++
++  test(
++    'envelope summary filtering cannot reveal encoded or split URLs and Bearer text',
++    () {
++      final raw =
++          '${DownloadFailureStorage.prefix}${jsonEncode({'version': 1, 'message': 'http\u200bs://secret.invalid/path Bearer\nsecret-token magnet:?xt=hidden', 'diagnostics': null})}';
++      final message = DownloadFailureStorage.decode(raw).message!;
++      expect(message, isNot(contains('secret.invalid')));
++      expect(message, isNot(contains('secret-token')));
++      expect(message, isNot(contains('magnet:')));
++      expect(message, contains('[link omitted]'));
++      expect(message, contains('Bearer [redacted]'));
++    },
++  );
++
++  test(
++    'transitions clear prior diagnostics and preserve the waiting marker when encoded',
++    () {
++      final task = _task(_details().sanitized('key'));
++      for (final next in [
++        task.copyWith(status: DownloadStatus.pending),
++        task.copyWith(status: DownloadStatus.completed),
++        task.copyWith(error: 'A different failure.'),
++        task.copyWith(error: null, diagnostics: task.diagnostics),
++      ]) {
++        expect(next.diagnostics, isNull);
++      }
++      final waiting = task.copyWith(
++        status: DownloadStatus.paused,
++        error: 'Still preparing. (CACHING_TIMEOUT)',
++        diagnostics: task.diagnostics,
++      );
++      final restored = DownloadTask.fromMap(waiting.toMap());
++      expect(restored.waitingForDebrid, isTrue);
++      expect(restored.error, 'Still preparing. (CACHING_TIMEOUT)');
++      expect(restored.statusText, 'Waiting for debrid');
++    },
++  );
++}
 diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_test.dart
 --- a/test/debrid/debrid_service_test.dart
 +++ b/test/debrid/debrid_service_test.dart
-@@ -1,4 +1,5 @@
+@@ -1,7 +1,10 @@
  import 'dart:async';
 +
  import 'package:flutter_test/flutter_test.dart';
  import 'package:flutter_secure_storage/flutter_secure_storage.dart';
++import 'package:romgi/models/debrid_failure_details.dart';
  import 'package:romgi/models/models.dart';
-@@ -133,21 +134,18 @@
++import 'package:romgi/models/torrent_file_selection_proof.dart';
+ import 'package:romgi/services/debrid/debrid_provider.dart';
+ import 'package:romgi/services/debrid/debrid_registry.dart';
+ import 'package:romgi/services/debrid_service.dart';
+@@ -50,7 +53,52 @@
+ 
+   @override
+   Future<TorrentMetadata?> getTorrentMetadata(String infohash) async => meta;
++
++  @override
++  Future<TorrentFileSelectionProof?> getTorrentFileSelectionProof({
++    required String infohash,
++    required int fileIndex,
++    required String filePath,
++    required int expectedSize,
++  }) async => null;
+ }
++
++class _ProofRomDb extends _FakeRomDb {
++  _ProofRomDb(this.loadProof) : super(null);
++
++  final Future<TorrentFileSelectionProof?> Function() loadProof;
++  int calls = 0;
++  Map<String, Object>? lastSelection;
++
++  @override
++  Future<TorrentFileSelectionProof?> getTorrentFileSelectionProof({
++    required String infohash,
++    required int fileIndex,
++    required String filePath,
++    required int expectedSize,
++  }) {
++    calls++;
++    lastSelection = {
++      'infohash': infohash,
++      'fileIndex': fileIndex,
++      'filePath': filePath,
++      'expectedSize': expectedSize,
++    };
++    return loadProof();
++  }
++}
++
++TorrentFileSelectionProof _catalogProof() =>
++    TorrentFileSelectionProof.tryCreate(
++      infohash: _hash,
++      fileIndex: 0,
++      filePath: 'game.iso',
++      expectedSize: 100,
++      members: const [
++        TorrentFileIdentity(index: 0, path: 'game.iso', size: 100),
++        TorrentFileIdentity(index: 1, path: 'Other Game.zip', size: 200),
++      ],
++    )!;
+ 
+ class _ControlledStorage extends InMemorySecureStorage {
+   _ControlledStorage(super.store);
+@@ -111,7 +159,7 @@
+   storage: storage,
+ );
+ 
+-DownloadLink _torrentLink() => const DownloadLink(
++DownloadLink _torrentLink({int? fileIndex = 0}) => DownloadLink(
+   name: 'Game',
+   type: 'Game',
+   format: 'iso',
+@@ -122,7 +170,7 @@
+   sizeStr: '100',
+   sourceUrl: '',
+   torrentInfohash: _hash,
+-  torrentFileIndex: 0,
++  torrentFileIndex: fileIndex,
+ );
+ 
+ DebridService _service(_FakeProvider provider, {TorrentMetadata? meta}) =>
+@@ -133,6 +181,120 @@
      );
  
  void main() {
--  test(
--    'a typed draft key is trimmed and tested without reading or saving Keychain state',
--    () async {
--      final provider = _FakeProvider(const []);
--      final store = {'debrid.credentials.v1.fake': 'saved-key'};
--      final storage = _ControlledStorage(store)
--        ..onRead = (_) async => throw StateError('Keychain unavailable');
--      final service = _withStorage(provider, storage);
--      expect(await service.testConnection(apiKey: ' draft-key '), isNull);
--      expect(provider.lastValidatedKey, 'draft-key');
--      expect(storage.reads, isEmpty);
--      expect(store['debrid.credentials.v1.fake'], 'saved-key');
--      expect(await service.testConnection(apiKey: '   '), 'No API key set');
--    },
--  );
-+  test('a typed draft key is trimmed and tested without reading or saving Keychain state', () async {
-+    final provider = _FakeProvider(const []);
-+    final store = {'debrid.credentials.v1.fake': 'saved-key'};
-+    final storage = _ControlledStorage(store)
-+      ..onRead = (_) async => throw StateError('Keychain unavailable');
-+    final service = _withStorage(provider, storage);
-+    expect(await service.testConnection(apiKey: ' draft-key '), isNull);
-+    expect(provider.lastValidatedKey, 'draft-key');
-+    expect(storage.reads, isEmpty);
-+    expect(store['debrid.credentials.v1.fake'], 'saved-key');
-+    expect(await service.testConnection(apiKey: '   '), 'No API key set');
++  group('catalog evidence for TorBox filename matching', () {
++    Future<DebridService> configured(
++      _FakeProvider provider,
++      _ProofRomDb database,
++    ) async {
++      final service = DebridService(
++        romDb: database,
++        registry: DebridProviderRegistry(providers: [provider]),
++        storage: InMemorySecureStorage({}),
++      );
++      await service.setCredentials(providerId: provider.id, apiKey: 'test-key');
++      return service;
++    }
++
++    test(
++      'passes evidence bound to the actual selected catalog tuple',
++      () async {
++        final proof = _catalogProof();
++        final database = _ProofRomDb(() async => proof);
++        final provider = _FakeProvider(const [
++          DebridReady('https://cdn.example/game.iso', size: 100),
++        ], id: 'torbox');
++        final service = await configured(provider, database);
++        final result = await service.resolveTorrentLink(_torrentLink());
++        expect(result, isNotNull);
++        expect(database.calls, 1);
++        expect(database.lastSelection, {
++          'infohash': _hash,
++          'fileIndex': 0,
++          'filePath': 'game.iso',
++          'expectedSize': 100,
++        });
++        expect(provider.lastReq!.selectionProof, same(proof));
++      },
++    );
++
++    test(
++      'a missing catalog proof preserves ordinary provider resolution',
++      () async {
++        final database = _ProofRomDb(
++          () async => throw StateError('unavailable'),
++        );
++        final provider = _FakeProvider(const [
++          DebridReady('https://cdn.example/game.iso', size: 100),
++        ], id: 'torbox');
++        final service = await configured(provider, database);
++        expect(await service.resolveTorrentLink(_torrentLink()), isNotNull);
++        expect(provider.lastReq!.selectionProof, isNull);
++      },
++    );
++
++    test('other providers do not query TorBox catalog evidence', () async {
++      final database = _ProofRomDb(
++        () async => throw StateError('must not run'),
++      );
++      final provider = _FakeProvider(const [
++        DebridReady('https://cdn.example/game.iso'),
++      ]);
++      final service = await configured(provider, database);
++      expect(await service.resolveTorrentLink(_torrentLink()), isNotNull);
++      expect(database.calls, 0);
++      expect(provider.lastReq!.selectionProof, isNull);
++    });
++
++    test('an absent file index cannot become proof for index zero', () async {
++      final database = _ProofRomDb(() async => _catalogProof());
++      final provider = _FakeProvider(const [
++        DebridReady('https://cdn.example/game.iso'),
++      ], id: 'torbox');
++      final service = await configured(provider, database);
++      expect(
++        await service.resolveTorrentLink(_torrentLink(fileIndex: null)),
++        isNotNull,
++      );
++      expect(database.calls, 0);
++      expect(provider.lastReq!.selectionProof, isNull);
++    });
++
++    for (final changeCredentials in [false, true]) {
++      test(
++        '${changeCredentials ? 'credential change' : 'cancellation'} during evidence lookup prevents resolution',
++        () async {
++          final started = Completer<void>();
++          final response = Completer<TorrentFileSelectionProof?>();
++          final database = _ProofRomDb(() {
++            started.complete();
++            return response.future;
++          });
++          final provider = _FakeProvider(const [
++            DebridReady('https://cdn.example/game.iso'),
++          ], id: 'torbox');
++          final service = await configured(provider, database);
++          var cancelled = false;
++          final failures = <DebridError>[];
++          final pending = service.resolveTorrentLink(
++            _torrentLink(),
++            onFailure: failures.add,
++            isCancelled: () => cancelled,
++          );
++          await started.future;
++          if (changeCredentials) {
++            await service.clearCredentials(providerId: 'torbox');
++          } else {
++            cancelled = true;
++          }
++          response.complete(_catalogProof());
++          expect(await pending, isNull);
++          expect(provider.calls, 0);
++          expect(failures, isEmpty);
++        },
++      );
++    }
 +  });
- 
++
    test(
-     'a temporary Keychain read error is retried instead of caching no key',
-@@ -199,24 +197,20 @@
-     );
-   }
- 
--  test(
--    'concurrent first reads wait for one legacy migration and one shared key read',
--    () async {
--      final storage = _ControlledStorage({});
--      final migration = Completer<String?>();
--      storage.onRead = (key) async => key == 'debrid.credentials.v1'
--          ? migration.future
--          : storage.store[key];
--      final service = _withStorage(_FakeProvider(const []), storage);
--      final first = service.isConfigured();
--      final second = service.isConfigured();
--      await Future<void>.delayed(Duration.zero);
--      expect(storage.reads['debrid.credentials.v1'], 1);
--      migration.complete('{"providerId":"fake","apiKey":"legacy-key"}');
--      expect(await Future.wait([first, second]), [true, true]);
--      expect(storage.reads['debrid.credentials.v1.fake'], 2);
--    },
--  );
-+  test('concurrent first reads wait for one legacy migration and one shared key read', () async {
-+    final storage = _ControlledStorage({});
-+    final migration = Completer<String?>();
-+    storage.onRead = (key) async =>
-+        key == 'debrid.credentials.v1' ? migration.future : storage.store[key];
-+    final service = _withStorage(_FakeProvider(const []), storage);
-+    final first = service.isConfigured();
-+    final second = service.isConfigured();
-+    await Future<void>.delayed(Duration.zero);
-+    expect(storage.reads['debrid.credentials.v1'], 1);
-+    migration.complete('{"providerId":"fake","apiKey":"legacy-key"}');
-+    expect(await Future.wait([first, second]), [true, true]);
-+    expect(storage.reads['debrid.credentials.v1.fake'], 2);
-+  });
- 
-   test('legacy migration preserves a newer provider-specific key', () async {
-     final storage = _ControlledStorage({
-@@ -527,4 +521,182 @@
+     'a typed draft key is trimmed and tested without reading or saving Keychain state',
+     () async {
+@@ -527,4 +689,306 @@
      await service.clearCredentials();
      expect(service.isConfiguredSync(), isFalse);
    });
 +
 +  group('per-request failure diagnostics', () {
++    test('provider error codes cannot repeat the request credential', () async {
++      const key = 'EXAMPLE_PRIVATE_CREDENTIAL';
++      final service = _service(
++        _FakeProvider([
++          const DebridError('Provider error.', code: key, permanent: true),
++        ]),
++      );
++      await service.setCredentials(providerId: 'fake', apiKey: key);
++      DebridError? failure;
++      await service.resolveTorrentLink(
++        _torrentLink(),
++        onFailure: (value) => failure = value,
++      );
++      expect(failure!.code, isNull);
++      expect(failure!.displayMessage, isNot(contains(key)));
++    });
++
++    DebridFailureDetails details(String selected) =>
++        DebridFailureDetails.torbox(
++          stage: DebridFailureStage.fileSelection,
++          code: 'FILE_NOT_FOUND',
++          requestedPath: 'Collection/$selected',
++          expectedSize: 100,
++          providerFileCount: 1,
++          files: [
++            DebridDiagnosticFile(
++              name: 'Provider/$selected',
++              shortName: selected,
++              size: 100,
++              zipped: false,
++            ),
++          ],
++          downloadPresent: true,
++          downloadFinished: true,
++        );
++
++    test('typed file details are sanitized at the resolver boundary', () async {
++      const key = 'fixture+secret/token';
++      final encoded = Uri.encodeComponent(key);
++      final service = _service(
++        _FakeProvider([
++          DebridError(
++            'File could not be matched.',
++            code: 'FILE_NOT_FOUND',
++            permanent: true,
++            diagnostics: details('Game $encoded.zip'),
++          ),
++        ]),
++      );
++      await service.setCredentials(providerId: 'fake', apiKey: key);
++      DebridError? failure;
++      await service.resolveTorrentLink(
++        _torrentLink(),
++        onFailure: (value) => failure = value,
++      );
++      final report = failure!.diagnostics!.toReport();
++      expect(report, isNot(contains(key)));
++      expect(report, isNot(contains(encoded)));
++      expect(report, contains('[redacted]'));
++      expect(report, contains('Provider files: 1'));
++    });
++
++    test(
++      'timeout retains typed details from its last provider error',
++      () async {
++        final service = _service(
++          _FakeProvider([
++            DebridError(
++              'TorBox is temporarily unavailable.',
++              code: 'RATE_LIMITED',
++              rateLimited: true,
++              diagnostics: details('Game.zip'),
++            ),
++          ]),
++        );
++        await service.setCredentials(providerId: 'fake', apiKey: 'fixture-key');
++        DebridError? failure;
++        await service.resolveTorrentLink(
++          _torrentLink(),
++          onFailure: (value) => failure = value,
++          overallTimeout: const Duration(milliseconds: 10),
++        );
++        expect(failure!.code, 'RATE_LIMITED');
++        expect(failure!.diagnostics!.requestedPath, 'Collection/Game.zip');
++      },
++    );
++
++    test(
++      'parallel failures retain only their own typed file details',
++      () async {
++        final service = _service(
++          _FakeProvider([
++            for (final name in ['First.zip', 'Second.zip'])
++              DebridError(
++                'File could not be matched.',
++                code: 'FILE_NOT_FOUND',
++                permanent: true,
++                diagnostics: details(name),
++              ),
++          ]),
++        );
++        await service.setCredentials(providerId: 'fake', apiKey: 'fixture-key');
++        final first = <DebridError>[];
++        final second = <DebridError>[];
++        await Future.wait([
++          service.resolveTorrentLink(_torrentLink(), onFailure: first.add),
++          service.resolveTorrentLink(_torrentLink(), onFailure: second.add),
++        ]);
++        expect(first.single.diagnostics!.requestedPath, 'Collection/First.zip');
++        expect(
++          second.single.diagnostics!.requestedPath,
++          'Collection/Second.zip',
++        );
++        expect(
++          first.single.diagnostics!.toReport(),
++          isNot(contains('Second.zip')),
++        );
++        expect(
++          second.single.diagnostics!.toReport(),
++          isNot(contains('First.zip')),
++        );
++      },
++    );
++
 +    for (final failure in [
 +      const DebridError(
 +        'The account key was rejected.',
@@ -5171,12 +7054,13 @@ diff --git a/test/debrid/download_failure_diagnostics_test.dart b/test/debrid/do
 new file mode 100644
 --- /dev/null
 +++ b/test/debrid/download_failure_diagnostics_test.dart
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,624 @@
 +import 'dart:async';
 +import 'dart:io';
 +
 +import 'package:dio/dio.dart';
 +import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/debrid_failure_details.dart';
 +import 'package:romgi/models/models.dart';
 +import 'package:romgi/services/debrid/debrid_provider.dart';
 +import 'package:romgi/services/debrid_service.dart';
@@ -5276,6 +7160,17 @@ new file mode 100644
 +  code: 'CACHING_TIMEOUT',
 +);
 +
++DebridFailureDetails _details(String name) => DebridFailureDetails.torbox(
++  stage: DebridFailureStage.fileSelection,
++  code: 'FILE_NOT_FOUND',
++  requestedPath: 'Catalog/$name.rom',
++  expectedSize: 1000,
++  providerFileCount: 10,
++  files: [
++    DebridDiagnosticFile(name: '/private/provider/$name.rom', size: 1000),
++  ],
++).sanitized('test-private-key')!;
++
 +DownloadTask _task(String id) => DownloadTask(
 +  id: id,
 +  slug: id,
@@ -5362,18 +7257,20 @@ new file mode 100644
 +    () async {
 +      debrid.plan(
 +        'first.rom',
-+        const DebridError(
++        DebridError(
 +          'TorBox account is at its active limit.',
 +          code: 'ACTIVE_LIMIT',
 +          permanent: true,
++          diagnostics: _details('first'),
 +        ),
 +      );
 +      debrid.plan(
 +        'second.rom',
-+        const DebridError(
++        DebridError(
 +          'The requested pack file was not found.',
 +          code: 'FILE_NOT_FOUND',
 +          permanent: true,
++          diagnostics: _details('second'),
 +        ),
 +      );
 +      db.rows['first'] = _task('first');
@@ -5388,6 +7285,14 @@ new file mode 100644
 +      expect(db.rows['first']!.error, isNot(contains('FILE_NOT_FOUND')));
 +      expect(db.rows['second']!.error, contains('FILE_NOT_FOUND'));
 +      expect(db.rows['second']!.error, isNot(contains('ACTIVE_LIMIT')));
++      expect(db.rows['first']!.diagnostics!.requestedPath, 'Catalog/first.rom');
++      expect(
++        db.rows['second']!.diagnostics!.requestedPath,
++        'Catalog/second.rom',
++      );
++      final restored = DownloadTask.fromMap(db.rows['second']!.toMap());
++      expect(restored.error, db.rows['second']!.error);
++      expect(restored.diagnostics!.requestedPath, 'Catalog/second.rom');
 +      expect(
 +        db.rows.values.map((task) => task.error),
 +        everyElement(isNot(contains('Not cached on debrid'))),
@@ -5396,6 +7301,70 @@ new file mode 100644
 +      expect(transport.calls, isEmpty);
 +    },
 +  );
++
++  test(
++    'retry clears the previous attempt details before contacting debrid again',
++    () async {
++      db.rows['retry'] = _task('retry').copyWith(
++        status: DownloadStatus.failed,
++        error: 'Prior failure. (FILE_NOT_FOUND)',
++        diagnostics: _details('retry'),
++      );
++      debrid.plan(
++        'retry.rom',
++        const DebridError(
++          'A later unrelated error.',
++          code: 'ACTIVE_LIMIT',
++          permanent: true,
++        ),
++      );
++      await downloads.retryDownload('retry');
++      await debrid.started['retry.rom']!.future;
++      expect(db.rows['retry']!.diagnostics, isNull);
++      expect(db.rows['retry']!.error, isNull);
++      debrid.release['retry.rom']!.complete();
++      await _until(() => db.rows['retry']!.status == DownloadStatus.failed);
++      expect(db.rows['retry']!.diagnostics, isNull);
++      expect(db.rows['retry']!.error, contains('ACTIVE_LIMIT'));
++    },
++  );
++
++  for (final updating in [false, true]) {
++    test(
++      'late structured failure cannot cross ${updating ? 'app update' : 'cancellation'} boundary',
++      () async {
++        debrid.plan(
++          'late.rom',
++          DebridError(
++            'A late matching failure.',
++            code: 'FILE_NOT_FOUND',
++            permanent: true,
++            diagnostics: _details('late'),
++          ),
++        );
++        debrid.ignoreCancellation.add('late.rom');
++        db.rows['late'] = _task('late');
++        final events = <DownloadTask>[];
++        final subscription = downloads.downloadStream.listen(events.add);
++        addTearDown(subscription.cancel);
++        downloads.setMaxConcurrentDownloads(1);
++        await debrid.started['late.rom']!.future;
++        if (updating) {
++          final preparation = downloads.prepareForAppUpdate();
++          debrid.release['late.rom']!.complete();
++          await preparation;
++          expect(db.rows['late']!.diagnostics, isNull);
++          expect(db.rows['late']!.error, isNull);
++        } else {
++          await downloads.cancelDownload('late');
++          debrid.release['late.rom']!.complete();
++          await Future<void>.delayed(const Duration(milliseconds: 20));
++          expect(db.rows.containsKey('late'), isFalse);
++        }
++        expect(events.where((task) => task.diagnostics != null), isEmpty);
++      },
++    );
++  }
 +
 +  test(
 +    'remote preparation pauses, preserves selection and releases the queue slot',
@@ -5709,6 +7678,556 @@ new file mode 100644
 +    expect(torrents.added, isEmpty);
 +    expect(transport.calls, isEmpty);
 +  });
++}
+diff --git a/test/debrid/torbox_catalog_proof_test.dart b/test/debrid/torbox_catalog_proof_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/debrid/torbox_catalog_proof_test.dart
+@@ -0,0 +1,545 @@
++import 'dart:convert';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++import 'package:romgi/services/debrid/debrid_provider.dart';
++import 'package:romgi/services/debrid/torbox_provider.dart';
++
++import 'debrid_test_utils.dart';
++
++const _hash = '068a566699b1136a64dca807286b3bdb5403458d';
++const _filename = 'Halo - Combat Evolved (USA) (Rev 2).zip';
++const _path = 'Redump/Microsoft - Xbox/$_filename';
++const _size = 6884752659;
++const _total = _size + 3333;
++const _members = [
++  TorrentFileIdentity(index: 0, path: 'Redump/Other A.zip', size: 1111),
++  TorrentFileIdentity(index: 1, path: _path, size: _size),
++  TorrentFileIdentity(index: 2, path: 'Redump/Other B.zip', size: 2222),
++];
++
++TorrentFileSelectionProof _proof({
++  List<TorrentFileIdentity> members = _members,
++  String path = _path,
++  int size = _size,
++  int index = 1,
++  String hash = _hash,
++}) => TorrentFileSelectionProof.tryCreate(
++  infohash: hash,
++  fileIndex: index,
++  filePath: path,
++  expectedSize: size,
++  members: members,
++)!;
++
++DebridFileRequest _request({
++  TorrentFileSelectionProof? proof,
++  bool withProof = true,
++  String path = _path,
++  int size = _size,
++  int index = 1,
++  String hash = _hash,
++}) => DebridFileRequest(
++  infohash: hash,
++  magnet: 'magnet:?xt=urn:btih:$hash',
++  fileIndex: index,
++  filePath: path,
++  expectedSize: size,
++  selectionProof: withProof ? (proof ?? _proof()) : null,
++);
++
++List<Object?> _files() => [
++  <String, Object?>{
++    'id': 71,
++    'name': 'Renamed Collection/Other A.zip',
++    'size': 1111,
++  },
++  <String, Object?>{
++    'id': 906,
++    'name': 'Renamed Collection/$_filename',
++    'short_name': _filename,
++    'size': _size,
++  },
++  <String, Object?>{
++    'id': 8,
++    'name': 'Renamed Collection/Other B.zip',
++    'size': 2222,
++  },
++];
++
++Future<(DebridResult, StubAdapter)> _resolve(
++  List<Object?> files, {
++  DebridFileRequest? request,
++  Object? totalSize = _total,
++  String? returnedHash,
++  bool downloadFails = false,
++}) async {
++  final req = request ?? _request();
++  final dio = stubbedDio('https://api.torbox.app/v1/api', {
++    '/v1/api/torrents/createtorrent': (_) => jsonBody(
++      jsonEncode({
++        'success': true,
++        'data': {'torrent_id': 42, 'hash': req.infohash},
++      }),
++    ),
++    '/v1/api/torrents/mylist': (_) => jsonBody(
++      jsonEncode({
++        'success': true,
++        'data': {
++          'id': 42,
++          'hash': returnedHash ?? req.infohash,
++          'name': 'An account-chosen name is not file-identity proof',
++          'download_path': '/private-provider-directory/not-for-diagnostics',
++          'size': totalSize,
++          'download_present': true,
++          'download_finished': true,
++          'files': files,
++        },
++      }),
++    ),
++    '/v1/api/torrents/requestdl': (_) => downloadFails
++        ? jsonBody('{"success":false,"error":"DOWNLOAD_SERVER_ERROR"}')
++        : jsonBody(
++            '{"success":true,"data":"https://download.example/selected"}',
++          ),
++  });
++  final result = await TorboxProvider(
++    dio: dio,
++  ).resolveFile(req, apiKey: 'fixture-key');
++  return (result, dio.httpClientAdapter as StubAdapter);
++}
++
++void _expectRefused(DebridResult result, StubAdapter adapter) {
++  expect(result, isA<DebridError>());
++  expect(
++    adapter.calls.where((call) => call.uri.path.endsWith('/requestdl')),
++    isEmpty,
++  );
++}
++
++void main() {
++  test(
++    'complete proof matches a renamed provider collection by file identity',
++    () async {
++      final (result, adapter) = await _resolve(_files());
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '906');
++      expect((result as DebridReady).size, _size);
++    },
++  );
++
++  test(
++    'a declared or renamed torrent folder alone is not sufficient',
++    () async {
++      final (result, adapter) = await _resolve(
++        _files(),
++        request: _request(withProof: false),
++      );
++      _expectRefused(result, adapter);
++      expect((result as DebridError).code, 'FILE_NOT_FOUND');
++    },
++  );
++
++  test('fallback preserves the complete revision and extension', () async {
++    final files = _files();
++    (files[1]! as Map<String, Object?>)
++      ..['name'] = 'Renamed Collection/Halo - Combat Evolved (USA).zip'
++      ..['short_name'] = 'Halo - Combat Evolved (USA).zip';
++    final (result, adapter) = await _resolve(files);
++    _expectRefused(result, adapter);
++  });
++
++  test(
++    'an unrelated literal percent filename does not abort decoded matching',
++    () async {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['name'] = 'Renamed/100% Game.zip';
++      (files[1]! as Map<String, Object?>)['name'] =
++          'Renamed/${Uri.encodeComponent(_filename)}';
++      final (result, adapter) = await _resolve(files);
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '906');
++    },
++  );
++
++  test(
++    'a conflicting short_name cannot override a different revision',
++    () async {
++      final files = _files();
++      (files[1]! as Map<String, Object?>)['name'] =
++          'Renamed Collection/Halo - Combat Evolved (USA).zip';
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    },
++  );
++
++  test('proof is rebound to every selected request field', () async {
++    for (final request in [
++      _request(index: 0),
++      _request(path: 'Different game folder/$_filename'),
++      _request(size: _size + 1),
++      _request(hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
++    ]) {
++      final (result, adapter) = await _resolve(_files(), request: request);
++      _expectRefused(result, adapter);
++    }
++  });
++
++  test('a different provider torrent is rejected before fallback', () async {
++    final (result, adapter) = await _resolve(
++      _files(),
++      returnedHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
++    );
++    _expectRefused(result, adapter);
++    expect((result as DebridError).code, 'TORRENT_IDENTITY_MISMATCH');
++  });
++
++  test('a partial or extended provider list cannot use the proof', () async {
++    for (final files in [
++      _files()..removeLast(),
++      _files()..add({'id': 500, 'name': 'Extra empty file', 'size': 0}),
++    ]) {
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    }
++  });
++
++  test('non-map rows invalidate provider completeness', () async {
++    final files = _files()..[2] = 'invalid file metadata';
++    final (result, adapter) = await _resolve(files);
++    _expectRefused(result, adapter);
++    expect(
++      (result as DebridError).diagnostics!.toReport(),
++      contains('collectionFileCountMatches: false'),
++    );
++  });
++
++  test(
++    'top-level torrent size must equal the complete catalog total',
++    () async {
++      for (final total in [null, 0, _total + 1]) {
++        final (result, adapter) = await _resolve(_files(), totalSize: total);
++        _expectRefused(result, adapter);
++      }
++    },
++  );
++
++  test(
++    'the actual listed-file sum must also match the catalog total',
++    () async {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['size'] = 1112;
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    },
++  );
++
++  test(
++    'new filename fallback requires an exact size, not the old tolerance',
++    () async {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['size'] = 1110;
++      (files[1]! as Map<String, Object?>)['size'] = _size + 1;
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    },
++  );
++
++  test(
++    'unknown or nonpositive requested size cannot activate fallback',
++    () async {
++      for (final size in [0, -1]) {
++        final (result, adapter) = await _resolve(
++          _files(),
++          request: _request(size: size),
++        );
++        _expectRefused(result, adapter);
++      }
++    },
++  );
++
++  test('every provider ID must be valid and unique', () async {
++    for (final id in [null, -1, 906, 'not-an-id', 1.5]) {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['id'] = id;
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    }
++  });
++
++  test('oversized provider IDs cannot activate proof fallback', () async {
++    for (final id in [9007199254740992, 1e40]) {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['id'] = id;
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    }
++  });
++
++  test('all provider sizes must be known nonnegative integers', () async {
++    for (final size in [null, -1, 'not-a-size', 1.5]) {
++      final files = _files();
++      (files[0]! as Map<String, Object?>)['size'] = size;
++      final (result, adapter) = await _resolve(files);
++      _expectRefused(result, adapter);
++    }
++  });
++
++  test(
++    'multiple provider filename-and-size matches remain ambiguous',
++    () async {
++      const members = [
++        TorrentFileIdentity(index: 0, path: 'Catalog/Game.zip', size: 1000),
++        TorrentFileIdentity(index: 1, path: 'Catalog/Other.zip', size: 1000),
++      ];
++      final request = _request(
++        path: 'Catalog/Game.zip',
++        size: 1000,
++        index: 0,
++        proof: _proof(
++          members: members,
++          path: 'Catalog/Game.zip',
++          size: 1000,
++          index: 0,
++        ),
++      );
++      final (result, adapter) = await _resolve(
++        [
++          {'id': 1, 'name': 'Renamed A/Game.zip', 'size': 1000},
++          {'id': 2, 'name': 'Renamed B/Game.zip', 'size': 1000},
++        ],
++        request: request,
++        totalSize: 2000,
++      );
++      _expectRefused(result, adapter);
++      expect((result as DebridError).code, 'FILE_AMBIGUOUS');
++    },
++  );
++
++  test('generic disc filenames need unique catalog identity as well', () async {
++    const members = [
++      TorrentFileIdentity(
++        index: 0,
++        path: 'Selected Game/disc1.bin',
++        size: 1000,
++      ),
++      TorrentFileIdentity(index: 1, path: 'Other Game/disc1.bin', size: 1000),
++    ];
++    final proof = _proof(
++      members: members,
++      path: members[0].path,
++      size: 1000,
++      index: 0,
++    );
++    expect(proof.uniqueFilename, isFalse);
++    final (result, adapter) = await _resolve(
++      [
++        {'id': 1, 'name': 'Renamed A/disc1.bin', 'size': 1000},
++        {'id': 2, 'name': 'Renamed B/disc1.bin', 'size': 1000},
++      ],
++      request: _request(
++        proof: proof,
++        path: members[0].path,
++        size: 1000,
++        index: 0,
++      ),
++      totalSize: 2000,
++    );
++    _expectRefused(result, adapter);
++  });
++
++  test(
++    'a generic filename is usable when the complete proof uniquely identifies it',
++    () async {
++      const members = [
++        TorrentFileIdentity(
++          index: 0,
++          path: 'Selected Game/disc1.bin',
++          size: 1000,
++        ),
++        TorrentFileIdentity(index: 1, path: 'Other Game/disc2.bin', size: 2000),
++      ];
++      final proof = _proof(
++        members: members,
++        path: members[0].path,
++        size: 1000,
++        index: 0,
++      );
++      final (result, adapter) = await _resolve(
++        [
++          {'id': 6, 'name': 'Renamed Collection/disc1.bin', 'size': 1000},
++          {'id': 7, 'name': 'Renamed Collection/disc2.bin', 'size': 2000},
++        ],
++        request: _request(
++          proof: proof,
++          path: members[0].path,
++          size: 1000,
++          index: 0,
++        ),
++        totalSize: 3000,
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '6');
++    },
++  );
++
++  test(
++    'zero-byte unselected members are valid when the complete sums match',
++    () async {
++      const members = [
++        TorrentFileIdentity(index: 0, path: _path, size: _size),
++        TorrentFileIdentity(index: 1, path: 'Empty.txt', size: 0),
++      ];
++      final proof = _proof(members: members, index: 0);
++      final (result, adapter) = await _resolve(
++        [
++          {'id': 6, 'name': 'Renamed Collection/$_filename', 'size': _size},
++          {'id': 7, 'name': 'Renamed Collection/Empty.txt', 'size': 0},
++        ],
++        request: _request(proof: proof, index: 0),
++        totalSize: _size,
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '6');
++    },
++  );
++
++  test(
++    'encoded filenames agree after one decode and retain literal plus',
++    () async {
++      const path = 'Catalog/Game+Plus (Rev 2).zip';
++      const members = [TorrentFileIdentity(index: 0, path: path, size: 1000)];
++      final proof = _proof(members: members, path: path, size: 1000, index: 0);
++      final (result, adapter) = await _resolve(
++        [
++          {
++            'id': 88,
++            'name': 'Renamed/Game+Plus%20%28Rev%202%29.zip',
++            'short_name': 'Game+Plus (Rev 2).zip',
++            'size': 1000,
++          },
++        ],
++        request: _request(proof: proof, path: path, size: 1000, index: 0),
++        totalSize: 1000,
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '88');
++    },
++  );
++
++  test(
++    'literal percent filename proof wins before decoded path alternatives',
++    () async {
++      const members = [
++        TorrentFileIdentity(
++          index: 0,
++          path: 'Catalog/Game%20Name.zip',
++          size: 1000,
++        ),
++        TorrentFileIdentity(
++          index: 1,
++          path: 'Catalog/Game Name.zip',
++          size: 1000,
++        ),
++      ];
++      final proof = _proof(
++        members: members,
++        path: members[0].path,
++        size: 1000,
++        index: 0,
++      );
++      expect(proof.uniqueFilename, isTrue);
++      expect(proof.uniqueDecodedFilename, isFalse);
++      final (result, adapter) = await _resolve(
++        [
++          {'id': 5, 'name': 'Catalog/Game Name.zip', 'size': 1000},
++          {'id': 9, 'name': 'Renamed/Game%20Name.zip', 'size': 1000},
++        ],
++        request: _request(
++          proof: proof,
++          path: members[0].path,
++          size: 1000,
++          index: 0,
++        ),
++        totalSize: 2000,
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '9');
++    },
++  );
++
++  test(
++    'decoded fallback refuses catalog names that collapse into each other',
++    () async {
++      const members = [
++        TorrentFileIdentity(
++          index: 0,
++          path: 'Catalog/Game%20Name.zip',
++          size: 1000,
++        ),
++        TorrentFileIdentity(
++          index: 1,
++          path: 'Catalog/Game Name.zip',
++          size: 1000,
++        ),
++      ];
++      final proof = _proof(
++        members: members,
++        path: members[0].path,
++        size: 1000,
++        index: 0,
++      );
++      final (result, adapter) = await _resolve(
++        [
++          {'id': 5, 'name': 'Renamed/Game Name.zip', 'size': 1000},
++          {'id': 9, 'name': 'Renamed/Game%2520Name.zip', 'size': 1000},
++        ],
++        request: _request(
++          proof: proof,
++          path: members[0].path,
++          size: 1000,
++          index: 0,
++        ),
++        totalSize: 2000,
++      );
++      _expectRefused(result, adapter);
++    },
++  );
++
++  test(
++    'existing exact path behavior does not require collection proof',
++    () async {
++      final files = _files();
++      (files[1]! as Map<String, Object?>)['name'] = _path;
++      final (result, adapter) = await _resolve(
++        files,
++        request: _request(withProof: false),
++        totalSize: null,
++      );
++      expect(result, isA<DebridReady>());
++      expect(adapter.calls.last.uri.queryParameters['file_id'], '906');
++    },
++  );
++
++  test(
++    'file-selection and requestdl failures carry safe typed diagnostics',
++    () async {
++      final (selection, selectionAdapter) = await _resolve(
++        _files(),
++        request: _request(withProof: false),
++      );
++      _expectRefused(selection, selectionAdapter);
++      final selectionDetails = (selection as DebridError).diagnostics!;
++      expect(selectionDetails.stage.name, 'fileSelection');
++      final report = selectionDetails.toReport();
++      expect(report, contains('catalogProofAvailable: false'));
++      expect(report, isNot(contains('private-provider-directory')));
++      expect(report, isNot(contains('Renamed Collection/')));
++      expect(report, isNot(contains('fixture-key')));
++      final (download, adapter) = await _resolve(_files(), downloadFails: true);
++      expect(download, isA<DebridError>());
++      expect((download as DebridError).diagnostics!.stage.name, 'downloadLink');
++      expect(adapter.calls.last.uri.path, endsWith('/requestdl'));
++    },
++  );
 +}
 diff --git a/test/debrid/torbox_file_metadata_test.dart b/test/debrid/torbox_file_metadata_test.dart
 new file mode 100644
@@ -6675,6 +9194,206 @@ diff --git a/test/download_update_preparation_test.dart b/test/download_update_p
  
    test(
      'native torrents pause and detach callbacks before preparation succeeds',
+diff --git a/test/downloads_diagnostics_copy_test.dart b/test/downloads_diagnostics_copy_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/downloads_diagnostics_copy_test.dart
+@@ -0,0 +1,195 @@
++import 'dart:async';
++import 'dart:convert';
++
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:package_info_plus/package_info_plus.dart';
++import 'package:shared_preferences/shared_preferences.dart';
++import 'package:romgi/models/debrid_failure_details.dart';
++import 'package:romgi/models/models.dart';
++import 'package:romgi/providers/download_provider.dart';
++import 'package:romgi/screens/downloads_screen.dart';
++import 'package:romgi/theme/romgi_themes.dart';
++
++import 'helpers/download_button_test_support.dart';
++
++class _Service extends InertDownloadService {
++  final List<DownloadTask> failed;
++  final actions = <String>[];
++  _Service(this.failed);
++
++  @override
++  Future<List<DownloadTask>> getFailedDownloads() async => failed;
++  @override
++  Future<void> retryDownload(String id) async => actions.add('retry:$id');
++  @override
++  Future<void> cancelDownload(String id) async => actions.add('cancel:$id');
++}
++
++DownloadTask _task({bool details = true}) => DownloadTask.fromMap(
++  DownloadTask(
++    id: 'halo',
++    slug: 'halo',
++    title: 'Halo',
++    platform: 'xbox',
++    status: DownloadStatus.failed,
++    createdAt: DateTime(2026),
++    error: 'The requested pack file was not found. (FILE_NOT_FOUND)',
++    diagnostics: details
++        ? DebridFailureDetails.torbox(
++            stage: DebridFailureStage.fileSelection,
++            code: 'FILE_NOT_FOUND',
++            requestedPath: 'Redump/Halo.zip',
++            expectedSize: 100,
++            providerFileCount: 200,
++            files: [
++              DebridDiagnosticFile(
++                name: '/srv/private-account/Halo.zip',
++                size: 100,
++              ),
++            ],
++          ).sanitized('dummy-private-key')
++        : null,
++    link: const DownloadLink(
++      name: 'Halo',
++      type: 'Game',
++      format: 'zip',
++      url: '',
++      filename: 'Halo.zip',
++      host: 'MiNERVA',
++      size: 100,
++      sizeStr: '100',
++      sourceUrl: '',
++    ),
++  ).toMap(),
++);
++
++Future<void> _mount(
++  WidgetTester tester,
++  _Service service, {
++  double scale = 1,
++}) async {
++  SharedPreferences.setMockInitialValues({});
++  await tester.pumpWidget(
++    ProviderScope(
++      overrides: [downloadServiceProvider.overrideWithValue(service)],
++      child: MaterialApp(
++        theme: buildRomgiTheme(AppDesign.native),
++        builder: (context, child) => MediaQuery(
++          data: MediaQuery.of(
++            context,
++          ).copyWith(textScaler: TextScaler.linear(scale)),
++          child: child!,
++        ),
++        home: const DownloadsScreen(),
++      ),
++    ),
++  );
++  await tester.pumpAndSettle();
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++
++  setUp(() {
++    PackageInfo.setMockInitialValues(
++      appName: 'NOMROM',
++      packageName: 'nomrom',
++      version: '1.10.4',
++      buildNumber: '25',
++      buildSignature: '',
++    );
++  });
++
++  tearDown(() {
++    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++        .setMockMethodCallHandler(SystemChannels.platform, null);
++  });
++
++  testWidgets('copies persisted safe details with version without retrying', (
++    tester,
++  ) async {
++    String? copied;
++    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
++          if (call.method == 'Clipboard.setData') {
++            copied = (call.arguments as Map)['text'] as String;
++          }
++          return null;
++        });
++    final service = _Service([_task()]);
++    await _mount(tester, service);
++    await tester.tap(find.byTooltip('Copy details'));
++    await tester.pumpAndSettle();
++    expect(copied, contains('App version: 1.10.4+25'));
++    expect(copied, contains('Stage: file selection'));
++    expect(copied, contains('FILE_NOT_FOUND'));
++    expect(copied, contains('Selected catalog path: Redump/Halo.zip'));
++    expect(copied, isNot(contains('private-account')));
++    expect(copied, isNot(contains('dummy-private-key')));
++    expect(utf8.encode(copied!).length, lessThanOrEqualTo(4096));
++    expect(find.text('Details copied'), findsOneWidget);
++    expect(service.actions, isEmpty);
++    expect(tester.takeException(), isNull);
++  });
++
++  testWidgets('plain legacy failure has no copy action', (tester) async {
++    await _mount(tester, _Service([_task(details: false)]));
++    expect(find.byTooltip('Copy details'), findsNothing);
++    expect(find.byTooltip('Retry'), findsOneWidget);
++    expect(find.byTooltip('Remove'), findsOneWidget);
++  });
++
++  testWidgets(
++    'clipboard failure is recoverable without leaking platform error',
++    (tester) async {
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
++            if (call.method == 'Clipboard.setData') {
++              throw PlatformException(
++                code: 'unavailable',
++                message: 'private-platform-detail',
++              );
++            }
++            return null;
++          });
++      final service = _Service([_task()]);
++      await _mount(tester, service);
++      await tester.tap(find.byTooltip('Copy details'));
++      await tester.pumpAndSettle();
++      expect(
++        find.text('Could not copy details. Please try again.'),
++        findsOneWidget,
++      );
++      expect(find.textContaining('private-platform-detail'), findsNothing);
++      expect(service.actions, isEmpty);
++      expect(tester.takeException(), isNull);
++    },
++  );
++
++  testWidgets(
++    'copy action fits narrow scaled layout and survives disposal while copying',
++    (tester) async {
++      tester.view.physicalSize = const Size(420, 900);
++      tester.view.devicePixelRatio = 1;
++      addTearDown(tester.view.resetPhysicalSize);
++      addTearDown(tester.view.resetDevicePixelRatio);
++      final copied = Completer<void>();
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
++            if (call.method == 'Clipboard.setData') await copied.future;
++            return null;
++          });
++      await _mount(tester, _Service([_task()]), scale: 1.8);
++      expect(tester.takeException(), isNull);
++      await tester.tap(find.byTooltip('Copy details'));
++      await tester.pump();
++      await tester.pumpWidget(const SizedBox.shrink());
++      copied.complete();
++      await tester.pumpAndSettle();
++      expect(tester.takeException(), isNull);
++    },
++  );
++}
 diff --git a/test/downloads_screen_actions_test.dart b/test/downloads_screen_actions_test.dart
 --- a/test/downloads_screen_actions_test.dart
 +++ b/test/downloads_screen_actions_test.dart
@@ -8609,6 +11328,427 @@ new file mode 100644
 +      expect((result as MetadataFound).description, 'Demo facts');
 +    },
 +  );
++}
+diff --git a/test/torrent_file_selection_database_test.dart b/test/torrent_file_selection_database_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/torrent_file_selection_database_test.dart
+@@ -0,0 +1,137 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++import 'package:romgi/services/rom_database_service.dart';
++import 'package:sqflite_common_ffi/sqflite_ffi.dart';
++
++const _hash = '0123456789abcdef0123456789abcdef01234567';
++const _otherHash = 'abcdef0123456789abcdef0123456789abcdef01';
++
++class _Catalog extends RomDatabaseService {
++  _Catalog(this.handle);
++  final Database handle;
++  int opens = 0;
++
++  @override
++  Future<Database> get database async {
++    opens++;
++    return handle;
++  }
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  sqfliteFfiInit();
++  late Database database;
++  late _Catalog service;
++
++  Future<void> insert(
++    int index,
++    String path,
++    int size, {
++    String hash = _hash,
++  }) => database
++      .insert('links', {
++        'torrent_infohash': hash,
++        'torrent_file_index': index,
++        'torrent_file_path': path,
++        'size': size,
++      })
++      .then((_) {});
++
++  Future<TorrentFileSelectionProof?> proof({String hash = _hash}) =>
++      service.getTorrentFileSelectionProof(
++        infohash: hash,
++        fileIndex: 0,
++        filePath: 'Collection/Game.zip',
++        expectedSize: 42,
++      );
++
++  setUp(() async {
++    database = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath);
++    // No affinity on the member fields so malformed SQLite values stay visible.
++    await database.execute('''CREATE TABLE links (
++      torrent_infohash TEXT, torrent_file_index, torrent_file_path, size)''');
++    await database.execute(
++      'CREATE INDEX idx_links_torrent ON links(torrent_infohash)',
++    );
++    await insert(0, 'Collection/Game.zip', 42);
++    await insert(1, 'Collection/Other.zip', 10);
++    service = _Catalog(database);
++  });
++
++  tearDown(() async => database.close());
++
++  test(
++    'read uses complete same-hash members and deduplicates catalog links',
++    () async {
++      await insert(0, r'./COLLECTION\GAME.ZIP', 42);
++      await insert(0, 'Wrong/Game.zip', 999, hash: _otherHash);
++      final before = await database.rawQuery('SELECT total_changes() AS count');
++      final result = (await proof(hash: _hash.toUpperCase()))!;
++      final after = await database.rawQuery('SELECT total_changes() AS count');
++      expect(result.infohash, _hash);
++      expect(result.fileCount, 2);
++      expect(result.totalSize, 52);
++      expect(result.uniqueFilename, isTrue);
++      expect(after, before);
++    },
++  );
++
++  test(
++    'each read observes replacement member data instead of a cached proof',
++    () async {
++      expect((await proof())!.uniqueFilename, isTrue);
++      await insert(2, 'OtherFolder/Game.zip', 42);
++      final result = (await proof())!;
++      expect(result.fileCount, 3);
++      expect(result.totalSize, 94);
++      expect(result.uniqueFilename, isFalse);
++      expect(result.uniqueDecodedFilename, isFalse);
++    },
++  );
++
++  test('index gaps and conflicting duplicate rows disable proof', () async {
++    await database.delete('links', where: 'torrent_file_index = 1');
++    await insert(2, 'Collection/Other.zip', 10);
++    expect(await proof(), isNull);
++    await database.update('links', {
++      'torrent_file_index': 1,
++    }, where: 'torrent_file_index = 2');
++    await insert(1, 'Wrong.zip', 10);
++    expect(await proof(), isNull);
++  });
++
++  for (final (field, value) in <(String, Object?)>[
++    ('torrent_file_index', null),
++    ('torrent_file_index', '1'),
++    ('torrent_file_index', 1.5),
++    ('torrent_file_path', null),
++    ('torrent_file_path', 123),
++    ('size', null),
++    ('size', '10'),
++    ('size', 10.5),
++    ('size', -1),
++  ]) {
++    test(
++      'malformed member $field=$value disables the complete proof',
++      () async {
++        await database.update('links', {
++          field: value,
++        }, where: 'torrent_file_index = 1');
++        expect(await proof(), isNull);
++      },
++    );
++  }
++
++  test('missing schema and absent hashes give no proof', () async {
++    expect(await proof(hash: _otherHash), isNull);
++    await database.execute('DROP TABLE links');
++    await database.execute('CREATE TABLE links (torrent_infohash TEXT)');
++    expect(await proof(), isNull);
++  });
++
++  test('invalid hash returns before opening a catalog', () async {
++    expect(await proof(hash: "' OR 1=1 --"), isNull);
++    expect(service.opens, 0);
++  });
++}
+diff --git a/test/torrent_file_selection_proof_test.dart b/test/torrent_file_selection_proof_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/torrent_file_selection_proof_test.dart
+@@ -0,0 +1,274 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++
++const _hash = '0123456789abcdef0123456789abcdef01234567';
++const _maxInteger = 9007199254740991;
++const _members = [
++  TorrentFileIdentity(index: 0, path: 'Collection/Game.zip', size: 42),
++  TorrentFileIdentity(index: 1, path: 'Collection/Other.zip', size: 10),
++];
++
++TorrentFileSelectionProof? _proof({
++  String infohash = _hash,
++  int fileIndex = 0,
++  String filePath = 'Collection/Game.zip',
++  int expectedSize = 42,
++  Iterable<TorrentFileIdentity> members = _members,
++}) => TorrentFileSelectionProof.tryCreate(
++  infohash: infohash,
++  fileIndex: fileIndex,
++  filePath: filePath,
++  expectedSize: expectedSize,
++  members: members,
++);
++
++void main() {
++  test('complete unordered members produce canonical immutable evidence', () {
++    final mutable = [
++      _members[1],
++      _members[0],
++      const TorrentFileIdentity(
++        index: 0,
++        path: r'./COLLECTION\Game.ZIP',
++        size: 42,
++      ),
++    ];
++    final proof = _proof(
++      infohash: _hash.toUpperCase(),
++      filePath: r'./COLLECTION\Game.ZIP',
++      members: mutable,
++    )!;
++    mutable.clear();
++    expect(proof.infohash, _hash);
++    expect(proof.fileIndex, 0);
++    expect(proof.filePath, 'collection/game.zip');
++    expect(proof.expectedSize, 42);
++    expect(proof.fileCount, 2);
++    expect(proof.totalSize, 52);
++    expect(proof.uniqueFilename, isTrue);
++    expect(proof.uniqueDecodedFilename, isTrue);
++  });
++
++  test('missing members and conflicting duplicate indices give no proof', () {
++    expect(_proof(members: []), isNull);
++    expect(_proof(members: [_members[1]]), isNull);
++    expect(
++      _proof(
++        members: [
++          _members[0],
++          const TorrentFileIdentity(index: 2, path: 'Third.zip', size: 1),
++        ],
++      ),
++      isNull,
++    );
++    for (final conflicting in [
++      const TorrentFileIdentity(index: 0, path: 'Wrong.zip', size: 42),
++      const TorrentFileIdentity(
++        index: 0,
++        path: 'Collection/Game.zip',
++        size: 43,
++      ),
++    ]) {
++      expect(_proof(members: [..._members, conflicting]), isNull);
++    }
++  });
++
++  test('the selected index path and positive size must agree exactly', () {
++    expect(_proof(fileIndex: 1), isNull);
++    expect(_proof(fileIndex: 2), isNull);
++    expect(_proof(filePath: 'Wrong/Game.zip'), isNull);
++    expect(_proof(expectedSize: 41), isNull);
++    expect(_proof(expectedSize: 0), isNull);
++    expect(
++      _proof(
++        filePath: 'Collection/Game%20One.zip',
++        members: [
++          const TorrentFileIdentity(
++            index: 0,
++            path: 'Collection/Game One.zip',
++            size: 42,
++          ),
++        ],
++      ),
++      isNull,
++    );
++  });
++
++  test('basename and exact size uniqueness are independent of directories', () {
++    final ambiguous = _proof(
++      members: [
++        _members[0],
++        const TorrentFileIdentity(index: 1, path: 'Other/GAME.zip', size: 42),
++      ],
++    )!;
++    expect(ambiguous.uniqueFilename, isFalse);
++    expect(ambiguous.uniqueDecodedFilename, isFalse);
++    final differentSize = _proof(
++      members: [
++        _members[0],
++        const TorrentFileIdentity(index: 1, path: 'Other/GAME.zip', size: 43),
++      ],
++    )!;
++    expect(differentSize.uniqueFilename, isTrue);
++    expect(differentSize.uniqueDecodedFilename, isTrue);
++  });
++
++  test('decoding can make a literal unique filename ambiguous', () {
++    final proof = _proof(
++      filePath: 'A/Game%20One.zip',
++      members: [
++        const TorrentFileIdentity(index: 0, path: 'A/Game%20One.zip', size: 42),
++        const TorrentFileIdentity(index: 1, path: 'B/Game One.zip', size: 42),
++      ],
++    )!;
++    expect(proof.filePath, 'a/game%20one.zip');
++    expect(proof.uniqueFilename, isTrue);
++    expect(proof.uniqueDecodedFilename, isFalse);
++  });
++
++  test('decoding is once only and plus is a literal filename character', () {
++    final proof = _proof(
++      filePath: 'A/Game%2520+One.zip',
++      members: [
++        const TorrentFileIdentity(
++          index: 0,
++          path: 'A/Game%2520+One.zip',
++          size: 42,
++        ),
++        const TorrentFileIdentity(index: 1, path: 'B/Game +One.zip', size: 42),
++        const TorrentFileIdentity(
++          index: 2,
++          path: 'B/Game%20 One.zip',
++          size: 42,
++        ),
++      ],
++    )!;
++    expect(proof.uniqueDecodedFilename, isTrue);
++    expect(
++      normalizeTorrentFilePath(r'  ./Root\Game%20+One.ZIP  ', decode: true),
++      'root/game +one.zip',
++    );
++    expect(
++      normalizeTorrentFilePath('Root/Game%2520.zip', decode: true),
++      'root/game%20.zip',
++    );
++    expect(
++      normalizeTorrentFilePath('Root/100% Game.zip', decode: true),
++      'root/100% game.zip',
++    );
++  });
++
++  test('shared comparison keeps existing leading-root normalization', () {
++    expect(normalizeTorrentFilePath('  /A//./B/../Game.ZIP '), 'a/game.zip');
++    expect(normalizeTorrentFilePath('  '), '');
++    expect(normalizeTorrentFilePath('A/Game%20One.zip'), 'a/game%20one.zip');
++  });
++
++  for (final path in [
++    '',
++    '.',
++    '/',
++    '..',
++    '../Game.zip',
++    'A/../Game.zip',
++    '/Root/Game.zip',
++    r'C:\Games\Game.zip',
++    'C:Game.zip',
++    './C:/Game.zip',
++    r'\\server\Game.zip',
++    'A/\u0000Game.zip',
++    'A/\nGame.zip',
++    'A/Game.zip\n',
++    'A/Game.zip/',
++    'A/.',
++    '%2fRoot/Game.zip',
++    'A/%2e%2e/Game.zip',
++    'A/%00Game.zip',
++  ]) {
++    test('unsafe member or selected path ${path.codeUnits} gives no proof', () {
++      expect(_proof(filePath: path), isNull);
++      expect(
++        _proof(
++          members: [
++            _members[0],
++            TorrentFileIdentity(index: 1, path: path, size: 0),
++          ],
++        ),
++        isNull,
++      );
++    });
++  }
++
++  test('hash must contain exactly forty hexadecimal characters', () {
++    for (final hash in [
++      '',
++      '${_hash}0',
++      _hash.substring(1),
++      'g$_hash',
++      ' $_hash',
++    ]) {
++      expect(_proof(infohash: hash), isNull);
++    }
++  });
++
++  test('negative and imprecisely representable integers give no proof', () {
++    for (final number in [-1, _maxInteger + 1]) {
++      expect(_proof(fileIndex: number), isNull);
++      expect(_proof(expectedSize: number), isNull);
++      expect(
++        _proof(
++          members: [
++            _members[0],
++            TorrentFileIdentity(index: number, path: 'Other.zip', size: 0),
++          ],
++        ),
++        isNull,
++      );
++      expect(
++        _proof(
++          members: [
++            _members[0],
++            TorrentFileIdentity(index: 1, path: 'Other.zip', size: number),
++          ],
++        ),
++        isNull,
++      );
++    }
++  });
++
++  test('zero-byte other members count and sums cannot overflow the bound', () {
++    final proof = _proof(
++      members: [
++        _members[0],
++        const TorrentFileIdentity(index: 1, path: 'Empty.txt', size: 0),
++      ],
++    )!;
++    expect(proof.fileCount, 2);
++    expect(proof.totalSize, 42);
++    final maximum = _proof(
++      expectedSize: _maxInteger,
++      members: [
++        const TorrentFileIdentity(
++          index: 0,
++          path: 'Collection/Game.zip',
++          size: _maxInteger,
++        ),
++      ],
++    )!;
++    expect(maximum.totalSize, _maxInteger);
++    expect(
++      _proof(
++        expectedSize: _maxInteger,
++        members: [
++          const TorrentFileIdentity(
++            index: 0,
++            path: 'Collection/Game.zip',
++            size: _maxInteger,
++          ),
++          const TorrentFileIdentity(index: 1, path: 'Other.zip', size: 1),
++        ],
++      ),
++      isNull,
++    );
++  });
 +}
 diff --git a/validation/skraper-integration.json b/validation/skraper-integration.json
 new file mode 100644
