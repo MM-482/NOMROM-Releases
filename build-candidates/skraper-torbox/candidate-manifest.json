@@ -1,0 +1,174 @@
+{
+  "candidate_version": "1.10.3+24",
+  "base_archive_url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.10.2/NOMROM-1.10.2-windows-source.zip",
+  "base_archive_sha256": "ad13561aa0e7f6796c9b107d88c641b3c4c92f280a4104e41f18d7eaf4356756",
+  "patch_sha256": "b4d7154c85497cf9f3eed3809ff7c25ce0ac5efe6d0609db6d6709257cad4fbb",
+  "source_root": "NOMROM-Windows-Source",
+  "changed_files": [
+    {
+      "path": "SKRAPER-INTEGRATION.txt",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "e7369ff8d37c45019d1114a19964ca6ff91a50e3d68fba910dd53513f96eb77d"
+    },
+    {
+      "path": "SKRAPER-VALIDATION.txt",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "1f5c8cf3bc05f8dfed08bc53a295068adc1ebf9275705380934d8f1790dbf623"
+    },
+    {
+      "path": "WINDOWS-CANDIDATE.txt",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "806e036633922b6e8274d16b1e8ed285470ef1ab218306034d0803ea3630de99"
+    },
+    {
+      "path": "lib/screens/settings_screen.dart",
+      "base_normalized_sha256": "ccde5c3d45ca4c95807f51a3e128024752fe17d82157a4cc7de1ee399f631a57",
+      "result_normalized_sha256": "ea7f1363bca08b59667d0de5f55a7c9046cd94e7f0cadc34f4978b6273ce88e1"
+    },
+    {
+      "path": "lib/services/debrid/debrid_provider.dart",
+      "base_normalized_sha256": "7ba004cf66cac93ddbc1d94d6fe31e21700aaa346d690bbab853dd5d363bc126",
+      "result_normalized_sha256": "7d5c4668eacd1e34fb6d2cf5b7dda5efd4555bce0a59d3fbafacd5a0ea46895f"
+    },
+    {
+      "path": "lib/services/debrid/torbox_provider.dart",
+      "base_normalized_sha256": "9c45a647f1ba1b50a0f4eb13ca9d912a159ba7b15395d913704848db78cf17a3",
+      "result_normalized_sha256": "eddbfe39c4d529496b4419577c9459d11de0aec802e45773b73014a29c755f81"
+    },
+    {
+      "path": "lib/services/debrid_service.dart",
+      "base_normalized_sha256": "998b77ee5eef12668413b72bf2949293d54d99a70e2e5237daf52bbea6546044",
+      "result_normalized_sha256": "a6b86e5704bbc3f5d2ea314adf144228c008c74e0d24dd6030c8118c759b8cbb"
+    },
+    {
+      "path": "lib/services/download_service.dart",
+      "base_normalized_sha256": "c0042ac8acc0a1d5c98cdc1844aeefbea888364225da802283d09186ee7f2db3",
+      "result_normalized_sha256": "c0a333d00d4249eba6deda2efc290e91094984f1391d59e81a1b81290645233a"
+    },
+    {
+      "path": "lib/services/game_artwork_cache.dart",
+      "base_normalized_sha256": "b1a699cd31c7361118a890053b95fdeeca746ac670adf9311fad18777bd8ec47",
+      "result_normalized_sha256": "1a84e044270b23e14d9b226105d818165f12966dede2afc4ffacef1389879ee7"
+    },
+    {
+      "path": "lib/services/game_metadata_service.dart",
+      "base_normalized_sha256": "f06c3c8ad1b759ba987dafb376a28551e3d11e13e94d3ef23d6cad22dae77bdd",
+      "result_normalized_sha256": "bc8af07a0fce1fddc1d75c1e3865d3dade71fed08f976f73dd2e835d73e353db"
+    },
+    {
+      "path": "lib/services/metadata/screenscraper_provider.dart",
+      "base_normalized_sha256": "ed15acf90f40042cdb586b1154904a761a7b555bb540a2cfeeb6026c0614acc5",
+      "result_normalized_sha256": "5143110fee8f18e47b1fee29a469a4fecbd22241f619e2b99b13f6a8eb8ce9c6"
+    },
+    {
+      "path": "lib/services/skraper/rom_identity_service.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "bcbfc718fa188e7ec4005926193e24fe3fded610fe9ea883b3c98ea964c2cf50"
+    },
+    {
+      "path": "lib/services/skraper/rom_lookup_result.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "839d344842cd6dacba8a9042ddf25d2a5a4387340107824ae74738c4885c0169"
+    },
+    {
+      "path": "lib/services/skraper/skraper_import_service.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "e9d4e10bd3fd891999d2a0d45c6ef66a3bbd1bdf5291781119905a46b6b511f6"
+    },
+    {
+      "path": "lib/services/skraper/skraper_metadata_provider.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "4f15ad71fdf546ad37eef9cf5d9dc48a979348eed55b9c0fb34287cb9d439e02"
+    },
+    {
+      "path": "lib/widgets/rom_identification_dialog.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "895dc6b18300b8648cc337796e1e40632f4824eb5eedf542143e11534fd8e3fb"
+    },
+    {
+      "path": "lib/widgets/skraper_import_backend.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "67cc13da399bc824e5f813c9d925d1fc3e7ea694fb581c81bdce4e5ebe52f5ff"
+    },
+    {
+      "path": "lib/widgets/skraper_import_dialog.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "61a1b59dc6a34e6a16baa4671d6398c48cd9e8bd30ce3a9d566c4b7cc1fe7bcd"
+    },
+    {
+      "path": "lib/widgets/skraper_integration_tile.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "d96e9d6ae6d3f0f27597c4fb855bef7a41886b7af1014639c4244fb71f9532c0"
+    },
+    {
+      "path": "pubspec.lock",
+      "base_normalized_sha256": "35f3d8e23663ccb4e29ffedf131a72b40a642b5659ababcf4b1724f51cf4f849",
+      "result_normalized_sha256": "534cf4520544b2e193fcceae8366c0910d84dd2470c47e5ce59d7f63333bdf34"
+    },
+    {
+      "path": "pubspec.yaml",
+      "base_normalized_sha256": "8045839645a494ff6851027b0b271cb6527e4ffc986ca8f93a2e2d716a78d6ef",
+      "result_normalized_sha256": "10e964f6dbeb25774b1f1f2f5102591c3abee26e584dae5c70cb26918c44bf19"
+    },
+    {
+      "path": "test/debrid/debrid_service_test.dart",
+      "base_normalized_sha256": "1ef47796afff2d7fd36e11a881ffeb334334776d9cbd09b46ca2b2783a74e823",
+      "result_normalized_sha256": "cd54f2abe59dae9a83d154e948d87269b6db0c38241d8e4da85eb16b0d6cda6b"
+    },
+    {
+      "path": "test/debrid/download_failure_diagnostics_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "ca3c3402dddb8d9c8e1386f0067b0667d5d9bc86eeb4ebe6f3051d66aac4d04a"
+    },
+    {
+      "path": "test/debrid/torbox_provider_test.dart",
+      "base_normalized_sha256": "9a5fa2371acaa2978f7ba351886a92c64448c230c79b112c24511cc736a1d941",
+      "result_normalized_sha256": "1c1c5a215a9f8f7424c14c4b73b7a440334b0cc1cdc606b1bdb89c6ff4c81919"
+    },
+    {
+      "path": "test/download_update_preparation_test.dart",
+      "base_normalized_sha256": "affd7c2ae1ffbec10b4a038fdf17be75b19bc634840869a66e2114ee819d5cbb",
+      "result_normalized_sha256": "c8144859aaa53ea8b86315b4a2db13a23079f9c58db5d2aed2f0a33a4a1911d0"
+    },
+    {
+      "path": "test/skraper/rom_identification_dialog_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "db3e0e69f4cf68cfdd282551f09a533fd23d1d4c8fbaa75b5449062bdaaf1526"
+    },
+    {
+      "path": "test/skraper/rom_identity_service_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "988ff0a32ed7c7a03e3658285a13116af598f277b1aff17880a5e4426702b310"
+    },
+    {
+      "path": "test/skraper/rom_lookup_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "652d60df5a6aec13a6d96eee01044bfc261cb09530806c4919ce1e7f123aada6"
+    },
+    {
+      "path": "test/skraper/skraper_import_service_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "46741731bab2d677473834bc004e541f859ebb60f64dd0e7f845c8a11b20093d"
+    },
+    {
+      "path": "test/skraper/skraper_integration_widget_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "f21e87c277452a8a1466eb02a45290712233c9fec57ad10e87288e256169f5d1"
+    },
+    {
+      "path": "test/skraper/skraper_metadata_integration_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "d846315bc93a6e52a37e30b8925656570392308f7068e5f81e1d42317880222a"
+    },
+    {
+      "path": "test/skraper/skraper_metadata_provider_test.dart",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "89ae9f6ae531e4b4475ba4b179a0465c9bbcad57eae6d161dc147695726edee7"
+    },
+    {
+      "path": "validation/skraper-integration.json",
+      "base_normalized_sha256": null,
+      "result_normalized_sha256": "3a94cf01bbcb4a90ffa3dba041f7756febcff7c274f84e917610d8d8fe9eb11a"
+    }
+  ]
+}

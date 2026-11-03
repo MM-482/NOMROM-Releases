@@ -1,0 +1,199 @@
+name: NOMROM Windows integration candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/nomrom-skraper-torbox-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nomrom-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      BOT: 'true'
+      POWERSHELL_TELEMETRY_OPTOUT: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out isolated build candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Verify and prepare source
+        id: prepare
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'build-candidates/skraper-torbox'
+          $output = Join-Path $env:RUNNER_TEMP ('nomrom-app-' + [guid]::NewGuid().ToString('N'))
+          $artifacts = Join-Path $env:RUNNER_TEMP 'nomrom-candidate-artifacts'
+          $verification = Join-Path $artifacts 'verification'
+          [IO.Directory]::CreateDirectory($verification) | Out-Null
+          "artifact_root=$artifacts" >> $env:GITHUB_OUTPUT
+          "NOMROM_VERIFY_ROOT=$verification" >> $env:GITHUB_ENV
+          Start-Transcript -Path (Join-Path $verification 'prepare-source.log') | Out-Null
+          try {
+            $app = & (Join-Path $candidate 'prepare-source.ps1') `
+              -Manifest (Join-Path $candidate 'candidate-manifest.json') `
+              -Patch (Join-Path $candidate 'candidate.patch') -OutputDirectory $output
+            if (-not ($app -is [string]) -or -not (Test-Path -LiteralPath (Join-Path $app 'pubspec.yaml'))) {
+              throw 'Source preparation did not return one validated application directory.'
+            }
+            Copy-Item -LiteralPath (Join-Path $output 'preparation.json') -Destination $verification
+            "NOMROM_APP_ROOT=$app" >> $env:GITHUB_ENV
+            "app_root=$app" >> $env:GITHUB_OUTPUT
+          } finally { Stop-Transcript | Out-Null }
+
+      - name: Install verified official Flutter 3.47.7 SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP ('flutter-' + [guid]::NewGuid().ToString('N') + '.zip')
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'f3477'
+          if (Test-Path -LiteralPath $sdkDirectory) { throw 'Refusing to reuse an unexpected SDK directory.' }
+          Start-Transcript -Path (Join-Path $env:NOMROM_VERIFY_ROOT 'flutter-setup.log') | Out-Null
+          try {
+            Invoke-WebRequest -Uri 'https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.47.7-stable.zip' -OutFile $zip
+            $sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sha -cne 'c2c875da25a1a1448d18ee4e8f398b2f6fce888b4775d8f9130538e16d826cb4') {
+              throw 'Official Flutter archive SHA-256 mismatch.'
+            }
+            Expand-Archive -LiteralPath $zip -DestinationPath $sdkDirectory
+            $flutter = Join-Path $sdkDirectory 'flutter'
+            if (-not (Test-Path -LiteralPath (Join-Path $flutter 'bin/flutter.bat') -PathType Leaf)) {
+              throw 'Flutter archive is missing its expected Windows launcher.'
+            }
+            "FLUTTER_ROOT=$flutter" >> $env:GITHUB_ENV
+            (Join-Path $flutter 'bin') >> $env:GITHUB_PATH
+            Write-Host "Official Flutter 3.47.7 archive SHA-256 verified: $sha"
+          } finally {
+            if (Test-Path -LiteralPath $zip -PathType Leaf) { Remove-Item -LiteralPath $zip -Force }
+            Stop-Transcript | Out-Null
+          }
+
+      - name: Restore, test, compile and verify Windows release
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path $env:NOMROM_VERIFY_ROOT 'windows-build.log') | Out-Null
+          try {
+            $privateConfig = Join-Path $env:LOCALAPPDATA 'NOMROM-Publisher/screenscraper-build-private.json'
+            if (Test-Path -LiteralPath $privateConfig) { throw 'This candidate must keep ScreenScraper application access pending.' }
+            & (Join-Path $env:NOMROM_APP_ROOT 'scripts/build-windows.ps1') `
+              -Flutter (Join-Path $env:FLUTTER_ROOT 'bin/flutter.bat') `
+              -UpdateConfigurationFile (Join-Path $env:NOMROM_APP_ROOT 'config/windows-updates-public.json')
+            $infoPath = Join-Path $env:NOMROM_APP_ROOT 'build/windows/x64/runner/Release/BUILD-INFO.json'
+            $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
+            if ($info.screenScraper.configured -ne $false) { throw 'ScreenScraper must remain unconfigured in this candidate.' }
+            if ($info.updateFeed.configured -ne $true -or $info.updateFeed.algorithm -ne 'rsa-pss-sha256') {
+              throw 'The existing signed-update public configuration was not preserved.'
+            }
+            Copy-Item -LiteralPath $infoPath -Destination $env:NOMROM_VERIFY_ROOT
+            Write-Host 'Verified ScreenScraper configured=false and signed-update public configuration preserved.'
+          } finally { Stop-Transcript | Out-Null }
+
+      - name: Ensure Inno Setup 6 is available
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --version=6.6.1 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
+          }
+
+      - name: Package and verify installer and portable ZIP
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path $env:NOMROM_VERIFY_ROOT 'package-verification.log') | Out-Null
+          try {
+            & (Join-Path $env:NOMROM_APP_ROOT 'scripts/package-windows.ps1') -SkipBuild
+            $packages = Join-Path '${{ steps.prepare.outputs.artifact_root }}' 'packages'
+            [IO.Directory]::CreateDirectory($packages) | Out-Null
+            $dist = Join-Path $env:NOMROM_APP_ROOT 'dist/windows'
+            foreach ($file in Get-ChildItem -LiteralPath $dist -File) {
+              if ($file.Name -notmatch '^NOMROM-\d+\.\d+\.\d+-windows-x64-(?:portable\.zip|setup\.exe|SHA256\.txt)$') {
+                throw "Unexpected file in candidate distribution: $($file.Name)"
+              }
+              Copy-Item -LiteralPath $file.FullName -Destination $packages
+            }
+            if (@(Get-ChildItem -LiteralPath $packages -File).Count -ne 3) { throw 'Expected installer, portable ZIP and SHA256 file.' }
+          } finally { Stop-Transcript | Out-Null }
+
+      - name: Verify native signed-update safeguards with synthetic fixtures
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path $env:NOMROM_VERIFY_ROOT 'update-verification.log') | Out-Null
+          try {
+            & (Join-Path $env:NOMROM_APP_ROOT 'scripts/test-windows-update-signing.ps1') `
+              -WorkDirectory (Join-Path $env:RUNNER_TEMP ('nomrom-update-' + [guid]::NewGuid().ToString('N')))
+          } finally { Stop-Transcript | Out-Null }
+
+      - name: Run bounded native Windows smoke harness
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path (Join-Path $env:NOMROM_VERIFY_ROOT 'native-smoke-build.log') | Out-Null
+          $process = $null
+          try {
+            . (Join-Path $env:NOMROM_APP_ROOT 'scripts/windows-common.ps1')
+            Assert-WindowsHost
+            Assert-WindowsBuildTools
+            Initialize-NomromCompilerEnvironment
+            $flutter = Join-Path $env:FLUTTER_ROOT 'bin/flutter.bat'
+            $reportPath = Join-Path $env:NOMROM_VERIFY_ROOT 'native-smoke.json'
+            if (Test-Path -LiteralPath $reportPath) { throw 'Refusing to reuse an existing native smoke report.' }
+            $define = "--dart-define=NOMROM_SMOKE_REPORT=$reportPath"
+            Push-Location -LiteralPath $env:NOMROM_APP_ROOT
+            try {
+              # Populate the Debug native-hook cache in the initialized compiler environment.
+              Invoke-CheckedNative $flutter @('build', 'bundle', '--debug', '--target-platform', 'windows-x64',
+                '--no-pub', '--target', 'tool/windows_smoke.dart', $define)
+              Invoke-CheckedNative $flutter @('build', 'windows', '--debug', '--no-pub',
+                '--target', 'tool/windows_smoke.dart', $define)
+            } finally { Pop-Location }
+            $debugDirectory = Join-Path $env:NOMROM_APP_ROOT 'build/windows/x64/runner/Debug'
+            $executable = Join-Path $debugDirectory 'NOMROM.exe'
+            if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'The Debug smoke runner was not produced.' }
+            $process = Start-Process -FilePath $executable -WorkingDirectory $debugDirectory -PassThru `
+              -RedirectStandardOutput (Join-Path $env:NOMROM_VERIFY_ROOT 'native-smoke-stdout.log') `
+              -RedirectStandardError (Join-Path $env:NOMROM_VERIFY_ROOT 'native-smoke-stderr.log')
+            if (-not $process.WaitForExit(180000)) {
+              # Terminate only the process started above and its own descendants.
+              $process.Kill($true)
+              $null = $process.WaitForExit(15000)
+              throw 'The native Windows smoke harness exceeded 180 seconds.'
+            }
+            if ($process.ExitCode -ne 0) { throw "Native smoke harness exited with code $($process.ExitCode)." }
+            if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) { throw 'Native smoke report is missing.' }
+            $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            if ($report.passed -ne $true -or $report.operatingSystem -ne 'windows') { throw 'Native Windows smoke checks did not pass.' }
+            foreach ($name in @('sqliteFfi', 'secureStorageDummyRoundTrip', 'nativeSelectedVolumeSpace',
+                'nativeArchiveExtraction', 'productionHttpFullAndResume', 'temporaryDataCleanup')) {
+              if ($report.checks.$name.passed -ne $true) { throw "Native smoke check failed or is absent: $name" }
+            }
+            Write-Host 'All six native Windows smoke checks passed; release packages were prepared before the Debug build.'
+          } finally {
+            if ($null -ne $process) {
+              if (-not $process.HasExited) {
+                $process.Kill($true)
+                $null = $process.WaitForExit(15000)
+              }
+              $process.Dispose()
+            }
+            Stop-Transcript | Out-Null
+          }
+
+      - name: Upload candidate packages and verification evidence
+        if: always() && steps.prepare.outputs.artifact_root != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: NOMROM-windows-x64-candidate-${{ github.run_id }}
+          path: ${{ steps.prepare.outputs.artifact_root }}
+          if-no-files-found: error
+          retention-days: 14
