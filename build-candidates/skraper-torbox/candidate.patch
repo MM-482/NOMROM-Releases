@@ -218,6 +218,104 @@ new file mode 100644
 +Application Dart/native source was stable for the final full-suite/analyzer
 +and Linux entrypoint gates. Only handoff documentation, validation records,
 +and packaging metadata were added afterward.
+diff --git a/TORBOX-COLLECTION-ZIP.txt b/TORBOX-COLLECTION-ZIP.txt
+new file mode 100644
+--- /dev/null
++++ b/TORBOX-COLLECTION-ZIP.txt
+@@ -0,0 +1,93 @@
++NOMROM 1.10.6+27 — Selected files inside a TorBox collection ZIP
++Copyright (c) Mark Mateo. Distributed under the repository's MIT license.
++
++EVIDENCE AND PURPOSE
++
++The user's 1.10.5+26 diagnostic report identifies a cached, finished torrent
++whose provider file list contains one explicitly zipped file:
++Minerva_Myrient.zip, 4,208,534,228 bytes. The selected catalog member is
++No-Intro/Nintendo - Super Nintendo Entertainment System/Super Mario World
++(USA).zip, 345,695 bytes. The report records validated torrent identity and
++available catalog proof, but the provider's member count and total size do
++not match the original collection. Ordinary filename matching cannot find
++an individual game when the provider exposes only that enclosing ZIP.
++
++The report does not reveal the ZIP's contents or its download server's range
++behavior. This update adds support for inspecting that representation safely;
++it does not assume the selected game is necessarily inside the returned ZIP.
++
++SELECTIVE ARCHIVE DOWNLOAD
++
++The existing ordinary-file resolver runs first. After a not-found or
++size-mismatch result, a separate container route is permitted only for one
++provider file explicitly marked zipped:true, a validated torrent identity,
++a bounded positive provider size, a valid provider file ID, and a complete
++catalog proof bound to the selected hash/index/path/positive-size tuple.
++The existing file ID is requested with zip_link=false. A collection's outer
++compressed size is not treated as the sum of its uncompressed catalog files.
++
++The catalog link, game filename and game size remain the durable download
++identity. The collection URL, size and transfer plan stay in memory. The URL
++does not replace the catalog link in JSON, task storage or resumed downloads.
++
++The archive reader requests bounded HTTP byte ranges. It requires status 206,
++the exact requested Content-Range and total length, identity encoding, and
++the exact response byte count. Redirects, requests, timeouts and metadata are
++bounded. A server that ignores Range fails explicitly; there is no fallback
++that downloads the whole collection. Private per-request cancellation also
++aborts the underlying connection when a response or range is rejected; the
++task's own cancellation token remains reserved for a user or lifecycle stop.
++Strong ETags use If-Match when provided;
++usable Last-Modified validators are checked when appropriate. Representation
++changes fail rather than combining incompatible ranges. When no strong
++validator is available, fixed range bounds, matching local/directory metadata,
++the exact output length and CRC32 remain mandatory. CRC32 is an integrity
++check, not a cryptographic proof of publisher identity.
++
++ZIP32 and ZIP64 metadata are supported, including member offsets beyond 4 GiB.
++The directory is limited to 16 MiB and 100,000 entries. The selected member
++must match a unique catalog path and size. A basename-only match also requires
++the complete directory's regular-file count and summed uncompressed bytes to
++match the catalog, plus proven catalog filename/size uniqueness. Literal plus
++and percent characters remain literal; ZIP names are not URL-decoded.
++
++Stored and Deflate members are supported. Split archives, encrypted entries,
++unsafe paths, links/special files, ambiguous members, inconsistent headers,
++invalid ranges and unsupported selected compression methods fail explicitly.
++Only the selected member's compressed byte range is streamed. Its output must
++match the catalog's exact size and an independently computed CRC32 before it
++is committed. Existing extraction and library handling then process that game
++file as usual. Large collections are not extracted into the library.
++
++LIFECYCLE AND DIAGNOSTICS
++
++Pause, cancellation and app-update preparation cancel archive work, drain
++pending writes and remove owned temporary files. Publication is guarded by
++the active task identity. Failed or interrupted archive work preserves an
++existing destination. A resumed Deflate member starts again from that member's
++beginning, not from an uncompressed byte offset in the outer ZIP. It never
++restarts a whole-collection download. Expired download links have a bounded
++re-resolution path using the original catalog tuple.
++
++Queue requests that arrive while another queue pass is running are coalesced
++into a further pass. This prevents an immediate Resume after app startup from
++being lost while the initial empty-queue check is still finishing.
++
++Archive failures retain the existing bounded, sanitized Copy details report
++with an archive-member stage and specific ZIP error code. Collection URLs,
++provider directories, account details, response bodies and credentials remain
++excluded. A failure such as ZIP_RANGE_UNSUPPORTED or ZIP_MEMBER_NOT_FOUND now
++identifies a different cause from ordinary provider FILE_NOT_FOUND.
++
++VERIFICATION AND LIMITS
++
++The release report records the actual automated test, native Windows build,
++package, updater-regression and native-smoke results. Fixtures use synthetic
++archives and local HTTP servers, including the reported provider wrapper
++shape. No game content, personal TorBox credentials or authenticated live
++download URL was used. Actual acceptance against the user's cached ZIP and
++an interactive installer upgrade remain separate from those checks.
++
++The original updater public configuration, database schema, Windows features,
++themes, attribution and prior Skraper integration remain in this candidate.
++Building and packaging do not publish a release or modify the signed feed.
 diff --git a/TORBOX-COMPATIBILITY.txt b/TORBOX-COMPATIBILITY.txt
 new file mode 100644
 --- /dev/null
@@ -389,10 +487,10 @@ diff --git a/lib/models/debrid_failure_details.dart b/lib/models/debrid_failure_
 new file mode 100644
 --- /dev/null
 +++ b/lib/models/debrid_failure_details.dart
-@@ -0,0 +1,574 @@
+@@ -0,0 +1,596 @@
 +import 'dart:convert';
 +
-+enum DebridFailureStage { fileSelection, downloadLink }
++enum DebridFailureStage { fileSelection, downloadLink, archiveMember }
 +
 +enum DebridDiagnosticCheck {
 +  torrentIdentityValidated,
@@ -549,6 +647,24 @@ new file mode 100644
 +    candidates: candidates.map((file) => file._sanitized(apiKey)).toList(),
 +  )._bounded();
 +
++  /// Keeps the already-sanitized provider evidence for an archive transfer.
++  DebridFailureDetails forArchiveFailure(String failureCode) =>
++      DebridFailureDetails._(
++        stage: DebridFailureStage.archiveMember,
++        code: _code(failureCode),
++        requestedPath: requestedPath,
++        expectedSize: expectedSize,
++        providerFileCount: providerFileCount,
++        usableFileCount: usableFileCount,
++        zippedFileCount: zippedFileCount,
++        downloadPresent: downloadPresent,
++        downloadFinished: downloadFinished,
++        downloadState: downloadState,
++        checks: checks,
++        candidates: candidates,
++        omittedCandidateCount: omittedCandidateCount,
++      )._bounded();
++
 +  DebridFailureDetails _copy({
 +    String? code,
 +    required String? requestedPath,
@@ -690,7 +806,11 @@ new file mode 100644
 +    final lines = <String>[
 +      'NOMROM download diagnostics v$schemaVersion$version',
 +      'Provider: TorBox',
-+      'Stage: ${stage == DebridFailureStage.fileSelection ? 'file selection' : 'download link'}',
++      'Stage: ${switch (stage) {
++        DebridFailureStage.fileSelection => 'file selection',
++        DebridFailureStage.downloadLink => 'download link',
++        DebridFailureStage.archiveMember => 'archive member',
++      }}',
 +      'Code: $code',
 +      'Selected catalog path: ${requestedPath ?? '[unavailable]'}',
 +      'Expected bytes: ${expectedSize ?? 'unknown'}',
@@ -964,6 +1084,57 @@ new file mode 100644
 +  }
 +  return '$out…';
 +}
+diff --git a/lib/models/download_link.dart b/lib/models/download_link.dart
+--- a/lib/models/download_link.dart
++++ b/lib/models/download_link.dart
+@@ -1,3 +1,5 @@
++import 'remote_zip_target.dart';
++
+ class DownloadLink {
+   final String name;
+   final String type;
+@@ -18,6 +20,10 @@
+   /// can be re-resolved.
+   final bool debridResolved;
+ 
++  /// Temporary selective-archive transport. Never serialized; all catalog
++  /// fields remain unchanged so a stored task can resolve a fresh target.
++  final RemoteZipTarget? remoteZip;
++
+   const DownloadLink({
+     required this.name,
+     required this.type,
+@@ -34,9 +40,11 @@
+     this.torrentFileIndex,
+     this.torrentFilePath,
+     this.debridResolved = false,
++    this.remoteZip,
+   });
+ 
+-  bool get isTorrent => torrentInfohash != null && !debridResolved;
++  bool get isTorrent =>
++      torrentInfohash != null && !debridResolved && remoteZip == null;
+ 
+   DownloadLink copyWith({
+     String? name,
+@@ -51,6 +59,7 @@
+     String? sourceId,
+     bool? requiresAuth,
+     bool? debridResolved,
++    RemoteZipTarget? remoteZip,
+   }) {
+     return DownloadLink(
+       name: name ?? this.name,
+@@ -68,6 +77,9 @@
+       torrentFileIndex: torrentFileIndex,
+       torrentFilePath: torrentFilePath,
+       debridResolved: debridResolved ?? this.debridResolved,
++      // A changed link must not retain an earlier container's signed URL or
++      // member selection. Callers preserve it only by explicitly passing it.
++      remoteZip: remoteZip,
+     );
+   }
+ 
 diff --git a/lib/models/download_task.dart b/lib/models/download_task.dart
 --- a/lib/models/download_task.dart
 +++ b/lib/models/download_task.dart
@@ -1065,6 +1236,31 @@ diff --git a/lib/models/download_task.dart b/lib/models/download_task.dart
        case DownloadStatus.extracting:
          return 'Extracting...';
        case DownloadStatus.completed:
+diff --git a/lib/models/remote_zip_target.dart b/lib/models/remote_zip_target.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/models/remote_zip_target.dart
+@@ -0,0 +1,20 @@
++import 'debrid_failure_details.dart';
++import 'torrent_file_selection_proof.dart';
++
++/// A temporary provider ZIP containing one selected catalog file.
++///
++/// The URL may authorize a download. Keep this object in memory only; a resumed
++/// task resolves the original catalog selection again instead of saving it.
++final class RemoteZipTarget {
++  const RemoteZipTarget({
++    required this.url,
++    required this.archiveSize,
++    required this.selectionProof,
++    this.diagnostics,
++  });
++
++  final String url;
++  final int archiveSize;
++  final TorrentFileSelectionProof selectionProof;
++  final DebridFailureDetails? diagnostics;
++}
 diff --git a/lib/models/torrent_file_selection_proof.dart b/lib/models/torrent_file_selection_proof.dart
 new file mode 100644
 --- /dev/null
@@ -1387,15 +1583,16 @@ diff --git a/lib/screens/settings_screen.dart b/lib/screens/settings_screen.dart
 diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debrid_provider.dart
 --- a/lib/services/debrid/debrid_provider.dart
 +++ b/lib/services/debrid/debrid_provider.dart
-@@ -1,4 +1,7 @@
+@@ -1,4 +1,8 @@
  library;
 +
 +import '../../models/debrid_failure_details.dart';
++import '../../models/remote_zip_target.dart';
 +import '../../models/torrent_file_selection_proof.dart';
  
  class DebridProviderInfo {
    final String id;
-@@ -18,6 +21,7 @@
+@@ -18,6 +22,7 @@
    final int fileIndex;
    final String? filePath;
    final int expectedSize;
@@ -1403,7 +1600,7 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
  
    const DebridFileRequest({
      required this.infohash,
-@@ -25,6 +29,7 @@
+@@ -25,6 +30,7 @@
      required this.fileIndex,
      this.filePath,
      this.expectedSize = 0,
@@ -1411,7 +1608,20 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
    });
  }
  
-@@ -46,6 +51,7 @@
+@@ -37,7 +43,11 @@
+   final String? filename;
+   final int? size;
+ 
+-  const DebridReady(this.url, {this.filename, this.size});
++  /// An explicit in-memory transport for one member of a provider ZIP.
++  /// This URL must never become an ordinary persisted HTTP DownloadLink.
++  final RemoteZipTarget? remoteZip;
++
++  const DebridReady(this.url, {this.filename, this.size, this.remoteZip});
+ }
+ 
+ class DebridCaching extends DebridResult {
+@@ -46,6 +56,7 @@
  
    const DebridCaching({this.progress, this.retryAfter});
  }
@@ -1419,7 +1629,7 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
  class DebridNotCached extends DebridResult {
    const DebridNotCached();
  }
-@@ -55,15 +61,25 @@
+@@ -55,15 +66,25 @@
    final bool authError;
    final bool rateLimited;
  
@@ -1448,7 +1658,7 @@ diff --git a/lib/services/debrid/debrid_provider.dart b/lib/services/debrid/debr
 diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torbox_provider.dart
 --- a/lib/services/debrid/torbox_provider.dart
 +++ b/lib/services/debrid/torbox_provider.dart
-@@ -1,14 +1,17 @@
+@@ -1,14 +1,18 @@
 +import 'dart:convert';
 +
 +import 'package:crypto/crypto.dart';
@@ -1456,6 +1666,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  import 'package:path/path.dart' as p;
  
 +import '../../models/debrid_failure_details.dart';
++import '../../models/remote_zip_target.dart';
 +import '../../models/torrent_file_selection_proof.dart';
  import 'debrid_provider.dart';
  
@@ -1471,7 +1682,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  class TorboxProvider implements DebridProvider {
    TorboxProvider({Dio? dio})
      : _dio =
-@@ -18,12 +21,17 @@
+@@ -18,12 +22,17 @@
                baseUrl: 'https://api.torbox.app/v1/api',
                connectTimeout: const Duration(seconds: 10),
                receiveTimeout: const Duration(seconds: 30),
@@ -1490,7 +1701,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  
    @override
    DebridProviderInfo get info => const DebridProviderInfo(
-@@ -38,7 +46,6 @@
+@@ -38,7 +47,6 @@
  
    Options _auth(String apiKey) => Options(
      headers: {'Authorization': 'Bearer ${apiKey.trim()}'},
@@ -1498,7 +1709,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
      validateStatus: (code) => code != null && code >= 200 && code < 600,
    );
  
-@@ -47,30 +54,19 @@
+@@ -47,30 +55,19 @@
      if (!isConfigured(apiKey)) return 'Enter your TorBox API key';
      try {
        final res = await _dio.get('/user/me', options: _auth(apiKey));
@@ -1533,7 +1744,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
      } catch (_) {
        return 'TorBox returned an unexpected response. Try again.';
      }
-@@ -81,158 +77,548 @@
+@@ -81,158 +78,619 @@
      DebridFileRequest req, {
      required String apiKey,
    }) async {
@@ -1612,7 +1823,21 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +      if (rawFiles.isEmpty) {
 +        return DebridCaching(progress: progress?.clamp(0.0, 1.0));
 +      }
-+      final selected = _pickFile(rawFiles, req, torrent);
++      Map<String, dynamic> selected;
++      Map<String, dynamic>? collectionZip;
++      try {
++        selected = _pickFile(rawFiles, req, torrent);
++      } on _TorboxRequestFailure catch (failure) {
++        if (!{
++          'FILE_NOT_FOUND',
++          'FILE_SIZE_MISMATCH',
++        }.contains(failure.error.code)) {
++          rethrow;
++        }
++        collectionZip = _collectionZipFile(rawFiles, req);
++        if (collectionZip == null) rethrow;
++        selected = collectionZip;
++      }
 +      final fileId = _asInt(selected['id']);
 +      if (fileId == null || fileId < 0) {
 +        throw _TorboxRequestFailure(_unexpectedResponse());
@@ -1625,6 +1850,8 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +          'token': token,
            'torrent_id': torrentId,
            'file_id': fileId,
++          // Select this existing provider file; never generate another ZIP.
++          'zip_link': 'false',
          },
 -        options: _auth(apiKey),
 +        options: _auth(token),
@@ -1670,8 +1897,33 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +          code: 'INVALID_DOWNLOAD_LINK',
 +        );
 +      }
++      final url = value as String;
++      if (collectionZip != null) {
++        // A provider-generated ZIP is a transport container, not the selected
++        // game. Its compressed byte size is unrelated to catalog member totals.
++        return DebridReady(
++          url,
++          filename: req.filePath,
++          size: req.expectedSize,
++          remoteZip: RemoteZipTarget(
++            url: url,
++            archiveSize: _asInt(collectionZip['size'])!,
++            selectionProof: req.selectionProof!,
++            diagnostics: _withTorrentDiagnostics(
++              const DebridError(
++                'The selected game is inside a TorBox collection ZIP.',
++                code: 'ARCHIVE_MEMBER',
++              ),
++              DebridFailureStage.archiveMember,
++              rawFiles,
++              req,
++              torrent,
++            ).diagnostics,
++          ),
++        );
++      }
 +      return DebridReady(
-+        value as String,
++        url,
 +        filename: _providerFileName(selected),
 +        size: _asInt(selected['size']),
 +      );
@@ -1960,6 +2212,36 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 +  }
 +}
 +
++/// Recognize only an explicit, single provider-generated collection ZIP.
++/// Complete original catalog evidence remains required for member selection.
++/// No ordinary file list is relaxed to an arbitrary sole-file download.
++Map<String, dynamic>? _collectionZipFile(
++  List<dynamic> files,
++  DebridFileRequest request,
++) {
++  if (files.length != 1 || files.single is! Map<String, dynamic>) return null;
++  final file = files.single as Map<String, dynamic>;
++  if (file['zipped'] != true) return null;
++  final proof = request.selectionProof;
++  if (proof == null ||
++      !_proofMatchesRequest(proof, request) ||
++      proof.fileCount <= 1) {
++    return null;
++  }
++  final id = _asInt(file['id']);
++  final size = _asInt(file['size']);
++  const maxExactInteger = 9007199254740991;
++  if (id == null ||
++      id < 0 ||
++      id > maxExactInteger ||
++      size == null ||
++      size < 22 ||
++      size > maxExactInteger) {
++    return null;
++  }
++  return file;
++}
++
 +bool _proofMatchesRequest(
 +  TorrentFileSelectionProof proof,
 +  DebridFileRequest request,
@@ -2194,7 +2476,7 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
  const _permanentErrorCodes = {
    'ACTIVE_LIMIT',
    'MONTHLY_LIMIT',
-@@ -240,65 +626,149 @@
+@@ -240,65 +698,149 @@
    'DOWNLOAD_TOO_LARGE',
    'INVALID_MAGNET',
    'INVALID_TORRENT',
@@ -2395,15 +2677,16 @@ diff --git a/lib/services/debrid/torbox_provider.dart b/lib/services/debrid/torb
 diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 --- a/lib/services/debrid_service.dart
 +++ b/lib/services/debrid_service.dart
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,8 @@
  import 'package:flutter_secure_storage/flutter_secure_storage.dart';
  
  import '../models/models.dart';
++import '../models/remote_zip_target.dart';
 +import '../models/torrent_file_selection_proof.dart';
  import 'credential_storage.dart';
  import 'debrid/debrid_provider.dart';
  import 'debrid/debrid_registry.dart';
-@@ -180,61 +181,245 @@
+@@ -180,61 +182,288 @@
    Future<DownloadLink?> resolveTorrentLink(
      DownloadLink link, {
      void Function(DebridCaching status)? onCaching,
@@ -2563,6 +2846,49 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 +      Duration wait;
        switch (result) {
          case DebridReady ready:
++          final archive = ready.remoteZip;
++          if (archive != null) {
++            final proof = archive.selectionProof;
++            final uri = Uri.tryParse(archive.url);
++            if (provider.info.id != 'torbox' ||
++                archive.url != ready.url ||
++                uri == null ||
++                !{'http', 'https'}.contains(uri.scheme) ||
++                uri.host.isEmpty ||
++                uri.userInfo.isNotEmpty ||
++                archive.archiveSize < 22 ||
++                archive.archiveSize > 9007199254740991 ||
++                selectionProof == null ||
++                proof.fileCount != selectionProof.fileCount ||
++                proof.totalSize != selectionProof.totalSize ||
++                proof.uniqueFilename != selectionProof.uniqueFilename ||
++                proof.uniqueDecodedFilename !=
++                    selectionProof.uniqueDecodedFilename ||
++                proof.infohash != infohash ||
++                proof.fileIndex != link.torrentFileIndex ||
++                proof.filePath != normalizeTorrentFilePath(selectedPath) ||
++                proof.expectedSize != link.size ||
++                proof.fileCount <= 1) {
++              return fail(
++                const DebridError(
++                  'The TorBox archive could not be verified against the selected game. Refresh the source list and try again.',
++                  code: 'ARCHIVE_IDENTITY_MISMATCH',
++                  permanent: true,
++                ),
++              );
++            }
++            // Preserve the durable catalog selection exactly. The signed
++            // container URL and its transport classification exist only in
++            // memory; pause/restart resolves that selection again.
++            return link.copyWith(
++              remoteZip: RemoteZipTarget(
++                url: archive.url,
++                archiveSize: archive.archiveSize,
++                selectionProof: proof,
++                diagnostics: archive.diagnostics?.sanitized(apiKey!),
++              ),
++            );
++          }
            return _toHttpLink(link, ready, provider.info.name);
          case DebridNotCached():
 -          return null;
@@ -2672,11 +2998,13 @@ diff --git a/lib/services/debrid_service.dart b/lib/services/debrid_service.dart
 diff --git a/lib/services/download_service.dart b/lib/services/download_service.dart
 --- a/lib/services/download_service.dart
 +++ b/lib/services/download_service.dart
-@@ -11,9 +11,11 @@
+@@ -11,15 +11,20 @@
  import 'package:uuid/uuid.dart';
  
  import '../models/models.dart';
 +import '../models/debrid_failure_details.dart';
++import '../models/remote_zip_target.dart';
++import '../models/torrent_file_selection_proof.dart';
  import '../torrent/torrent_api.g.dart';
  import 'database_service.dart';
  import 'debrid_service.dart';
@@ -2684,7 +3012,50 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
  import 'host_adapter.dart';
  import 'internet_archive_auth_manager.dart';
  import 'link_resolver.dart';
-@@ -668,6 +670,7 @@
+ import 'notification_service.dart';
+ import 'playlist_writer.dart';
+ import 'rom_database_service.dart';
++import 'remote_zip_service.dart';
+ import 'seven_zip_service.dart';
+ import 'storage_service.dart';
+ import 'torrent_info.dart';
+@@ -55,6 +60,8 @@
+   final TorrentService _torrents;
+   final SevenZipService _sevenZip;
+   final DebridService? _debrid;
++  late final RemoteZipService _remoteZipService;
++  final bool _ownsRemoteZipService;
+   late final PlaylistWriter _playlistWriter;
+   bool Function(String platform) shouldExtractForPlatform = (_) => true;
+   final Dio _dio;
+@@ -74,6 +81,7 @@
+   final Set<String> _userPausedTaskIds = {};
+   DateTime? _lastNotificationUpdate;
+   bool _isProcessingQueue = false;
++  bool _queueCheckRequested = false;
+   bool _disposed = false;
+   final Set<String> _publishingExtractionTargets = {};
+   final Map<String, String> _extractingArchives = {};
+@@ -124,6 +132,7 @@
+     required TorrentService torrents,
+     required SevenZipService sevenZip,
+     DebridService? debrid,
++    RemoteZipService? remoteZipService,
+     Dio? dio,
+     Duration updatePreparationTimeout = const Duration(seconds: 20),
+   }) : _db = db,
+@@ -134,8 +143,10 @@
+        _torrents = torrents,
+        _sevenZip = sevenZip,
+        _debrid = debrid,
++       _ownsRemoteZipService = remoteZipService == null,
+        _updatePreparationTimeout = updatePreparationTimeout,
+        _dio = dio ?? Dio() {
++    _remoteZipService = remoteZipService ?? RemoteZipService();
+     _playlistWriter = PlaylistWriter(
+       getGroupMembers: _db.getDownloadsByGroup,
+       getPlatformDirectory: _storage.getPlatformDirectory,
+@@ -668,6 +679,7 @@
  
      final backfilled = existing.copyWith(
        error: existing.error,
@@ -2692,7 +3063,7 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
        groupId: group.id,
        groupIndex: member.index,
        groupTitle: group.title,
-@@ -685,6 +688,7 @@
+@@ -685,6 +697,7 @@
      if (active != null) {
        _activeTasks[backfilled.id] = active.copyWith(
          error: active.error,
@@ -2700,7 +3071,46 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
          groupId: group.id,
          groupIndex: member.index,
          groupTitle: group.title,
-@@ -845,12 +849,37 @@
+@@ -702,7 +715,13 @@
+   Future<void> _processQueue() => _trackOperation(_processQueueBody);
+ 
+   Future<void> _processQueueBody() async {
+-    if (_disposed || _isProcessingQueue || _preparingAppUpdate) return;
++    if (_disposed || _preparingAppUpdate) return;
++    if (_isProcessingQueue) {
++      // A resume/add can arrive while this pass awaits the database or a
++      // notification. Remember it instead of dropping the queue wake-up.
++      _queueCheckRequested = true;
++      return;
++    }
+ 
+     _isProcessingQueue = true;
+ 
+@@ -749,6 +768,12 @@
+       }
+     } finally {
+       _isProcessingQueue = false;
++      if (_queueCheckRequested) {
++        _queueCheckRequested = false;
++        if (!_disposed && !_preparingAppUpdate) {
++          unawaited(_processQueue());
++        }
++      }
+     }
+   }
+ 
+@@ -839,32 +864,71 @@
+     if (_disposed || _preparingAppUpdate || _pausedTaskIds.contains(task.id)) {
+       return;
+     }
++    final remoteZip = task.link.remoteZip;
++    if (remoteZip != null) {
++      await _startRemoteZipDownload(task, remoteZip);
++      return;
++    }
+     final adapter = _adapters.adapterFor(task.link);
+ 
+     if (adapter.isTorrent) {
        final prefs = getLinkResolverPrefs();
        final debrid = _debrid;
        if (prefs.debridEnabled && debrid != null) {
@@ -2742,7 +3152,10 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
                _pausedTaskIds.contains(task.id) ||
                !_activeTasks.containsKey(task.id)) {
              return;
-@@ -860,11 +889,20 @@
+           }
+           if (resolved != null) {
+-            // Re-enter with a plain HTTP link — adapterFor() now routes to HTTP.
++            // Re-enter with a direct HTTP link or a transient ZIP-member target.
              await _startDownload(resolved);
              return;
            }
@@ -2765,7 +3178,255 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
              );
              return;
            }
-@@ -1377,13 +1415,29 @@
+@@ -1184,6 +1248,247 @@
+       }
+ 
+       _processQueue();
++    }
++  }
++
++  /// Retrieve one verified member without handing the collection URL to the
++  /// ordinary HTTP downloader or storing it in the download database.
++  Future<void> _startRemoteZipDownload(
++    DownloadTask task,
++    RemoteZipTarget target,
++  ) async {
++    if (_disposed ||
++        _preparingAppUpdate ||
++        _pausedTaskIds.contains(task.id) ||
++        !_activeTasks.containsKey(task.id)) {
++      return;
++    }
++    final originalLink = task.link.copyWith(); // Drops the transient target.
++    final selectedPath = originalLink.torrentFilePath?.trim().isNotEmpty == true
++        ? originalLink.torrentFilePath!
++        : originalLink.filename;
++    final proof = target.selectionProof;
++    if (originalLink.debridResolved ||
++        originalLink.torrentInfohash?.trim().toLowerCase() != proof.infohash ||
++        originalLink.torrentFileIndex != proof.fileIndex ||
++        normalizeTorrentFilePath(selectedPath) != proof.filePath ||
++        originalLink.size <= 0 ||
++        originalLink.size != proof.expectedSize) {
++      await _failTask(
++        task.copyWith(link: originalLink),
++        'The archive selection no longer matches this game. Refresh its source and try again. (ARCHIVE_TARGET_MISMATCH)',
++        diagnostics: target.diagnostics?.forArchiveFailure(
++          'ARCHIVE_TARGET_MISMATCH',
++        ),
++      );
++      return;
++    }
++
++    final cancelToken = CancelToken();
++    _activeCancelTokens[task.id] = cancelToken;
++    bool ownsTransfer() =>
++        identical(_activeCancelTokens[task.id], cancelToken) &&
++        _activeTasks.containsKey(task.id);
++    bool stopped() =>
++        _disposed ||
++        _preparingAppUpdate ||
++        _pausedTaskIds.contains(task.id) ||
++        cancelToken.isCancelled ||
++        !ownsTransfer();
++    void checkActive() {
++      if (!stopped()) return;
++      if (!cancelToken.isCancelled) cancelToken.cancel('Transfer stopped');
++      throw cancelToken.cancelError!;
++    }
++
++    var updatedTask = task.copyWith(
++      status: DownloadStatus.downloading,
++      progress: 0,
++      downloadedBytes: 0,
++      totalBytes: originalLink.size,
++      bytesPerSecond: 0,
++      resolvingDebrid: false,
++      fetchingMetadata: false,
++    );
++    Directory? staging;
++    final elapsed = Stopwatch()..start();
++
++    Future<void> interrupted() async {
++      if (_disposed || !ownsTransfer()) return;
++      if (_pausedTaskIds.contains(task.id) || _preparingAppUpdate) {
++        // Deflate output offsets cannot resume the compressed member. A new
++        // attempt resolves a fresh URL and restarts only this selected file.
++        final paused = updatedTask.copyWith(
++          link: originalLink,
++          status: DownloadStatus.paused,
++          progress: 0,
++          downloadedBytes: 0,
++          bytesPerSecond: 0,
++        );
++        _pausedTaskIds.remove(task.id);
++        await _saveDownload(paused);
++        if (!_disposed && ownsTransfer()) _emit(paused);
++      }
++    }
++
++    Future<void> fail(String code, String message) async {
++      if (stopped()) {
++        await interrupted();
++        return;
++      }
++      final failed = updatedTask.copyWith(
++        link: originalLink,
++        status: DownloadStatus.failed,
++        progress: 0,
++        downloadedBytes: 0,
++        bytesPerSecond: 0,
++        error: '$message ($code)',
++        diagnostics: target.diagnostics?.forArchiveFailure(code),
++      );
++      await _saveDownload(failed);
++      if (!stopped()) {
++        _emit(failed);
++        await _notifications.updateForTask(failed);
++      }
++    }
++
++    try {
++      _activeTasks[task.id] = updatedTask;
++      await _saveDownload(updatedTask);
++      checkActive();
++      _emit(updatedTask);
++      await _startForegroundTask(task.title);
++      checkActive();
++      await _updateNotifications();
++      checkActive();
++      final downloadPath = await _storage.getDownloadPath(
++        task.platform,
++        originalLink.filename,
++      );
++      checkActive();
++      final destination = File(downloadPath);
++      staging = await destination.parent.createTemp('.nomrom-zip-member-');
++      checkActive();
++      final member = File(p.join(staging.path, 'member'));
++      await _remoteZipService.download(
++        target: target,
++        destination: member,
++        cancelToken: cancelToken,
++        onReceiveProgress: (received, total) {
++          if (stopped()) return;
++          final count = received.clamp(0, originalLink.size).toInt();
++          final milliseconds = elapsed.elapsedMilliseconds;
++          updatedTask = updatedTask.copyWith(
++            progress: count / originalLink.size,
++            downloadedBytes: count,
++            totalBytes: originalLink.size,
++            bytesPerSecond: milliseconds > 0
++                ? (count * 1000 / milliseconds).round()
++                : 0,
++          );
++          _activeTasks[task.id] = updatedTask;
++          _emit(updatedTask);
++          final now = DateTime.now();
++          final lastWrite = _lastDbUpdate[task.id];
++          if (lastWrite == null ||
++              now.difference(lastWrite).inMilliseconds >= 2000) {
++            _lastDbUpdate[task.id] = now;
++            unawaited(_saveDownload(updatedTask).catchError((Object _) {}));
++          }
++          if (_lastNotificationUpdate == null ||
++              now.difference(_lastNotificationUpdate!).inMilliseconds >= 500) {
++            _lastNotificationUpdate = now;
++            unawaited(_updateNotifications().catchError((Object _) {}));
++          }
++        },
++      );
++      checkActive();
++      if (await member.length() != originalLink.size) {
++        throw const RemoteZipException(
++          'ARCHIVE_SIZE_MISMATCH',
++          'The selected archive member has an unexpected size.',
++        );
++      }
++      checkActive();
++      if (!_publishingExtractionTargets.add(downloadPath)) {
++        throw const RemoteZipException(
++          'ARCHIVE_DESTINATION_BUSY',
++          'Another download is publishing this file. Try again later.',
++        );
++      }
++      try {
++        final kind = await FileSystemEntity.type(
++          downloadPath,
++          followLinks: false,
++        );
++        checkActive();
++        if (kind != FileSystemEntityType.notFound &&
++            kind != FileSystemEntityType.file) {
++          throw const RemoteZipException(
++            'ARCHIVE_DESTINATION_UNAVAILABLE',
++            'The download destination is not an ordinary file.',
++          );
++        }
++        // Keep an existing file intact until the selected replacement has
++        // passed both the remote reader's CRC check and the exact size check.
++        // The final active check and same-volume rename must not yield: a
++        // queued pause or cancel cannot publish after its stop was observed.
++        member.renameSync(downloadPath);
++      } finally {
++        _publishingExtractionTargets.remove(downloadPath);
++      }
++      checkActive();
++      await _completeHttpDownload(task, downloadPath);
++    } on RemoteZipException catch (error) {
++      await fail(error.code, error.message);
++    } on DioException catch (error) {
++      if (stopped()) {
++        await interrupted();
++      } else if ({401, 403, 404, 410}.contains(error.response?.statusCode)) {
++        final attempts = (_debridRelinkAttempts[task.id] ?? 0) + 1;
++        _debridRelinkAttempts[task.id] = attempts;
++        if (attempts <= _maxDebridRelinkAttempts) {
++          final pending = updatedTask.copyWith(
++            link: originalLink,
++            status: DownloadStatus.pending,
++            progress: 0,
++            downloadedBytes: 0,
++            bytesPerSecond: 0,
++          );
++          await _saveDownload(pending);
++          if (!stopped()) _emit(pending);
++        } else {
++          await fail(
++            'ARCHIVE_LINK_EXPIRED',
++            'The archive download link expired repeatedly. Try again later.',
++          );
++        }
++      } else {
++        await fail(
++          'ARCHIVE_REQUEST_FAILED',
++          'The selected file could not be retrieved from the remote archive. Check your connection and try again.',
++        );
++      }
++    } catch (_) {
++      // Do not persist transport URLs, response bodies or local exception paths.
++      await fail(
++        'ARCHIVE_TRANSFER_FAILED',
++        'The selected archive file could not be saved. Check available space and try again.',
++      );
++    } finally {
++      elapsed.stop();
++      if (staging != null) {
++        try {
++          await staging.delete(recursive: true);
++        } catch (_) {}
++      }
++      if (identical(_activeCancelTokens[task.id], cancelToken)) {
++        _activeTasks.remove(task.id);
++        _activeCancelTokens.remove(task.id);
++        _lastDbUpdate.remove(task.id);
++      }
++      if (_activeTasks.isEmpty) await _stopForegroundTask();
++      if (!_disposed && !_preparingAppUpdate) unawaited(_processQueue());
+     }
+   }
+ 
+@@ -1377,13 +1682,29 @@
    /// Try to turn a torrent [task] into an HTTP download via the configured
    /// debrid provider. Shows "Resolving/Caching on debrid…" while polling.
    /// Returns null to fall back to P2P, or to abort after cancel/pause.
@@ -2797,7 +3458,7 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
  
      final working = task.copyWith(
        status: DownloadStatus.downloading,
-@@ -1398,13 +1452,16 @@
+@@ -1398,13 +1719,16 @@
      }
      _emit(working);
      await _startForegroundTask(task.title);
@@ -2817,7 +3478,7 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
          final current = _activeTasks[task.id];
          if (current == null) return;
          final updated = current.copyWith(
-@@ -1489,8 +1546,45 @@
+@@ -1489,8 +1813,45 @@
      await _maybeWritePlaylist(updatedTask);
    }
  
@@ -2865,6 +3526,14 @@ diff --git a/lib/services/download_service.dart b/lib/services/download_service.
      _activeTasks.remove(task.id);
      _activeCancelTokens.remove(task.id);
      await _saveDownload(failed);
+@@ -2278,6 +2639,7 @@
+       debugPrint('Could not close native download client: $error');
+     }
+     _dio.close(force: true);
++    if (_ownsRemoteZipService) _remoteZipService.dispose();
+     _downloadController.close();
+     unawaited(
+       _notifications.cancelAll().catchError((Object error) {
 diff --git a/lib/services/game_artwork_cache.dart b/lib/services/game_artwork_cache.dart
 --- a/lib/services/game_artwork_cache.dart
 +++ b/lib/services/game_artwork_cache.dart
@@ -3275,6 +3944,970 @@ diff --git a/lib/services/metadata/screenscraper_provider.dart b/lib/services/me
        return response;
      }();
      // Basic accounts permit one request at a time. Retain the actual work as
+diff --git a/lib/services/remote_zip_service.dart b/lib/services/remote_zip_service.dart
+new file mode 100644
+--- /dev/null
++++ b/lib/services/remote_zip_service.dart
+@@ -0,0 +1,959 @@
++import 'dart:async';
++import 'dart:convert';
++import 'dart:io';
++import 'dart:math' as math;
++import 'dart:typed_data';
++
++import 'package:dio/dio.dart';
++import 'package:path/path.dart' as p;
++
++import '../models/remote_zip_target.dart';
++import '../models/torrent_file_selection_proof.dart';
++import '../utils/windows_file_names.dart';
++
++/// A public, credential-free failure from a remote ZIP operation.
++class RemoteZipException implements Exception {
++  const RemoteZipException(this.code, this.message);
++
++  final String code;
++  final String message;
++
++  @override
++  String toString() => message;
++}
++
++/// Retrieves one catalog file from an existing ZIP, without downloading or
++/// extracting the other members. URLs and representation validators stay in
++/// memory; a resumed task starts a fresh plan for its original catalog tuple.
++class RemoteZipService {
++  RemoteZipService({Dio? dio})
++    : _ownsDio = dio == null,
++      _dio =
++          dio ??
++          Dio(
++            BaseOptions(
++              connectTimeout: const Duration(seconds: 20),
++              receiveTimeout: const Duration(seconds: 30),
++            ),
++          );
++
++  final Dio _dio;
++  final bool _ownsDio;
++
++  void dispose() {
++    if (_ownsDio) _dio.close(force: true);
++  }
++
++  Future<void> download({
++    required RemoteZipTarget target,
++    required File destination,
++    required CancelToken cancelToken,
++    required ProgressCallback onReceiveProgress,
++  }) async {
++    _checkCancelled(cancelToken);
++    if (target.archiveSize < 22 || target.archiveSize > _maxInteger) {
++      throw const RemoteZipException(
++        'ZIP_INVALID',
++        'The cached ZIP has an invalid size.',
++      );
++    }
++    final reader = _RangeReader(_dio, target, cancelToken);
++    final directory = await _readDirectory(reader);
++    final selected = _selectEntry(directory.entries, target.selectionProof);
++    final dataOffset = await _validateLocalEntry(reader, directory, selected);
++    final expectedSize = target.selectionProof.expectedSize;
++    // Raw Deflate has very small overhead for incompressible input. A generous
++    // bound also prevents a tiny selected file from consuming a huge range of
++    // no-output Deflate blocks. Neither this nor progress uses the outer size.
++    final overhead = math.max(65536, expectedSize ~/ 100);
++    if (selected.compressedSize <= 0 ||
++        selected.compressedSize > expectedSize + overhead ||
++        (selected.method == 0 && selected.compressedSize != expectedSize)) {
++      throw const RemoteZipException(
++        'ZIP_MEMBER_SIZE',
++        'The selected ZIP member has inconsistent or excessive compressed data.',
++      );
++    }
++
++    Directory? staging;
++    RandomAccessFile? output;
++    try {
++      _checkCancelled(cancelToken);
++      staging = await destination.parent.createTemp('.nomrom-zip-member-');
++      final stagedFile = File(p.join(staging.path, 'member'));
++      output = await stagedFile.open(mode: FileMode.write);
++      var received = 0;
++      final checksum = _Crc32();
++      final compressed = reader.stream(dataOffset, selected.compressedSize);
++      final Stream<List<int>> bytes = selected.method == 8
++          ? _inflate(_smallChunks(compressed))
++          : compressed;
++      onReceiveProgress(0, expectedSize);
++      await for (final chunk in bytes) {
++        _checkCancelled(cancelToken);
++        if (chunk.length > expectedSize - received) {
++          throw const RemoteZipException(
++            'ZIP_MEMBER_SIZE',
++            'The selected ZIP member expanded beyond its catalog size.',
++          );
++        }
++        checksum.add(chunk);
++        await output.writeFrom(chunk);
++        _checkCancelled(cancelToken);
++        received += chunk.length;
++        onReceiveProgress(received, expectedSize);
++      }
++      if (received != expectedSize) {
++        throw const RemoteZipException(
++          'ZIP_MEMBER_SIZE',
++          'The selected ZIP member ended before its catalog size was reached.',
++        );
++      }
++      if (checksum.value != selected.crc) {
++        throw const RemoteZipException(
++          'ZIP_CRC_MISMATCH',
++          'The selected ZIP member failed its integrity check. Please retry.',
++        );
++      }
++      await output.flush();
++      await output.close();
++      output = null;
++      _checkCancelled(cancelToken);
++      // A same-volume rename is the commit point. Never delete an existing
++      // destination first; failures and cancellation before commit preserve it.
++      stagedFile.renameSync(destination.path);
++    } finally {
++      await output?.close();
++      if (staging != null && await staging.exists()) {
++        await staging.delete(recursive: true);
++      }
++    }
++  }
++}
++
++const _maxInteger = 9007199254740991;
++const _maxDirectoryBytes = 16 * 1024 * 1024;
++const _maxEntries = 100000;
++const _eocdSignature = 0x06054b50;
++const _zip64LocatorSignature = 0x07064b50;
++const _zip64EndSignature = 0x06064b50;
++const _centralSignature = 0x02014b50;
++const _localSignature = 0x04034b50;
++const _descriptorSignature = 0x08074b50;
++
++Never _invalid([String message = 'The cached ZIP has invalid metadata.']) =>
++    throw RemoteZipException('ZIP_INVALID', message);
++
++Never _unsupported(String message) =>
++    throw RemoteZipException('ZIP_UNSUPPORTED', message);
++
++void _checkCancelled(CancelToken token) {
++  if (token.isCancelled) throw token.cancelError!;
++}
++
++int _u16(Uint8List bytes, int offset) =>
++    ByteData.sublistView(bytes, offset, offset + 2).getUint16(0, Endian.little);
++
++int _u32(Uint8List bytes, int offset) =>
++    ByteData.sublistView(bytes, offset, offset + 4).getUint32(0, Endian.little);
++
++int _u64(Uint8List bytes, int offset) {
++  if (offset < 0 || offset + 8 > bytes.length) _invalid();
++  final value = ByteData.sublistView(
++    bytes,
++    offset,
++    offset + 8,
++  ).getUint64(0, Endian.little);
++  if (value < 0 || value > _maxInteger) _invalid();
++  return value;
++}
++
++bool _inBounds(int start, int length, int limit) =>
++    start >= 0 && length >= 0 && start <= limit && length <= limit - start;
++
++final class _ZipDirectory {
++  const _ZipDirectory(this.entries, this.offset);
++  final List<_ZipEntry> entries;
++  final int offset;
++}
++
++final class _ZipEntry {
++  const _ZipEntry({
++    required this.path,
++    required this.rawName,
++    required this.neededVersion,
++    required this.flags,
++    required this.method,
++    required this.crc,
++    required this.size,
++    required this.compressedSize,
++    required this.localOffset,
++    required this.directory,
++    required this.zip64Sizes,
++  });
++
++  final String path;
++  final Uint8List rawName;
++  final int neededVersion;
++  final int flags;
++  final int method;
++  final int crc;
++  final int size;
++  final int compressedSize;
++  final int localOffset;
++  final bool directory;
++  final bool zip64Sizes;
++}
++
++Future<_ZipDirectory> _readDirectory(_RangeReader reader) async {
++  // EOCD (22) + maximum comment (65535), plus the adjacent ZIP64 locator (20).
++  final tailSize = math.min(reader.size, 65577);
++  final tailStart = reader.size - tailSize;
++  final tail = await reader.read(tailStart, tailSize);
++  var endIndex = -1;
++  for (var i = tail.length - 22; i >= 0; i--) {
++    if (_u32(tail, i) == _eocdSignature &&
++        i + 22 + _u16(tail, i + 20) == tail.length) {
++      if (endIndex != -1) {
++        _invalid('The cached ZIP has an ambiguous end record.');
++      }
++      endIndex = i;
++    }
++  }
++  if (endIndex < 0) _invalid('The cached file has no complete ZIP end record.');
++  final endOffset = tailStart + endIndex;
++  final disk = _u16(tail, endIndex + 4);
++  final directoryDisk = _u16(tail, endIndex + 6);
++  final diskCount = _u16(tail, endIndex + 8);
++  final count32 = _u16(tail, endIndex + 10);
++  final size32 = _u32(tail, endIndex + 12);
++  final offset32 = _u32(tail, endIndex + 16);
++  if (disk != 0 || directoryDisk != 0 || diskCount != count32) {
++    _unsupported('Split ZIP collections are not supported.');
++  }
++  var count = count32;
++  var directorySize = size32;
++  var directoryOffset = offset32;
++  var boundary = endOffset;
++  final locatorIndex = endIndex - 20;
++  final hasLocator =
++      locatorIndex >= 0 && _u32(tail, locatorIndex) == _zip64LocatorSignature;
++  final needsZip64 =
++      count32 == 0xffff || size32 == 0xffffffff || offset32 == 0xffffffff;
++  if (needsZip64 && !hasLocator) _invalid('The ZIP64 end record is missing.');
++  if (hasLocator) {
++    if (_u32(tail, locatorIndex + 4) != 0 ||
++        _u32(tail, locatorIndex + 16) != 1) {
++      _unsupported('Split ZIP64 collections are not supported.');
++    }
++    final zip64Offset = _u64(tail, locatorIndex + 8);
++    final locatorOffset = tailStart + locatorIndex;
++    if (!_inBounds(zip64Offset, 56, locatorOffset)) _invalid();
++    final record = await reader.read(zip64Offset, 56);
++    if (_u32(record, 0) != _zip64EndSignature) _invalid();
++    final recordSize = _u64(record, 4);
++    if (recordSize != 44 || _u16(record, 14) > 45) {
++      _unsupported('This ZIP64 metadata extension is not supported.');
++    }
++    if (zip64Offset + 12 + recordSize != locatorOffset) _invalid();
++    if (_u32(record, 16) != 0 || _u32(record, 20) != 0) {
++      _unsupported('Split ZIP64 collections are not supported.');
++    }
++    count = _u64(record, 32);
++    if (_u64(record, 24) != count) _invalid();
++    directorySize = _u64(record, 40);
++    directoryOffset = _u64(record, 48);
++    if ((count32 != 0xffff && count32 != count) ||
++        (size32 != 0xffffffff && size32 != directorySize) ||
++        (offset32 != 0xffffffff && offset32 != directoryOffset)) {
++      _invalid('The ZIP and ZIP64 directories disagree.');
++    }
++    boundary = zip64Offset;
++  }
++  if (count <= 0 ||
++      count > _maxEntries ||
++      directorySize <= 0 ||
++      directorySize > _maxDirectoryBytes) {
++    throw const RemoteZipException(
++      'ZIP_DIRECTORY_LIMIT',
++      'The ZIP directory is empty or exceeds the supported metadata limit.',
++    );
++  }
++  if (!_inBounds(directoryOffset, directorySize, boundary) ||
++      directoryOffset + directorySize != boundary ||
++      count > directorySize ~/ 46) {
++    _invalid('The ZIP directory has inconsistent bounds.');
++  }
++  final bytes = await reader.read(directoryOffset, directorySize);
++  final entries = <_ZipEntry>[];
++  final paths = <String>{};
++  final localOffsets = <int>{};
++  var cursor = 0;
++  for (var i = 0; i < count; i++) {
++    if (!_inBounds(cursor, 46, bytes.length) ||
++        _u32(bytes, cursor) != _centralSignature) {
++      _invalid('The ZIP directory is incomplete.');
++    }
++    final madeVersion = _u16(bytes, cursor + 4);
++    final neededVersion = _u16(bytes, cursor + 6);
++    final flags = _u16(bytes, cursor + 8);
++    final method = _u16(bytes, cursor + 10);
++    _validateFlags(flags);
++    final crc = _u32(bytes, cursor + 16);
++    var compressedSize = _u32(bytes, cursor + 20);
++    var size = _u32(bytes, cursor + 24);
++    final nameLength = _u16(bytes, cursor + 28);
++    final extraLength = _u16(bytes, cursor + 30);
++    final commentLength = _u16(bytes, cursor + 32);
++    var startDisk = _u16(bytes, cursor + 34);
++    final attributes = _u32(bytes, cursor + 38);
++    var localOffset = _u32(bytes, cursor + 42);
++    final recordLength = 46 + nameLength + extraLength + commentLength;
++    if (!_inBounds(cursor, recordLength, bytes.length) || nameLength == 0) {
++      _invalid();
++    }
++    final rawName = Uint8List.sublistView(
++      bytes,
++      cursor + 46,
++      cursor + 46 + nameLength,
++    );
++    final extras = _extras(
++      Uint8List.sublistView(
++        bytes,
++        cursor + 46 + nameLength,
++        cursor + 46 + nameLength + extraLength,
++      ),
++    );
++    final zip64Sizes = size == 0xffffffff || compressedSize == 0xffffffff;
++    final zip64 = extras[1];
++    var zip64Cursor = 0;
++    int next64() {
++      if (zip64 == null) {
++        _invalid('A ZIP64 member is missing its size metadata.');
++      }
++      final result = _u64(zip64, zip64Cursor);
++      zip64Cursor += 8;
++      return result;
++    }
++
++    if (size == 0xffffffff) size = next64();
++    if (compressedSize == 0xffffffff) compressedSize = next64();
++    if (localOffset == 0xffffffff) localOffset = next64();
++    if (startDisk == 0xffff) {
++      if (zip64 == null || !_inBounds(zip64Cursor, 4, zip64.length)) _invalid();
++      startDisk = _u32(zip64, zip64Cursor);
++    }
++    if (startDisk != 0) _unsupported('Split ZIP members are not supported.');
++    if (extras.containsKey(0x9901)) {
++      _unsupported('Encrypted ZIP members are not supported.');
++    }
++    final decoded = _decodeName(rawName, flags, extras);
++    final creator = madeVersion >> 8;
++    final mode = creator == 3 || creator == 19
++        ? (attributes >> 16) & 0xf000
++        : 0;
++    if ((mode != 0 && mode != 0x8000 && mode != 0x4000) ||
++        (attributes & 0x408) != 0) {
++      _unsupported('The ZIP contains links or special files.');
++    }
++    final directory =
++        decoded.endsWith('/') ||
++        decoded.endsWith('\\') ||
++        mode == 0x4000 ||
++        (attributes & 0x10) != 0;
++    final path = _safePath(decoded, directory: directory);
++    if (directory && (size != 0 || mode == 0x8000)) _invalid();
++    if (!paths.add(path) || !localOffsets.add(localOffset)) {
++      throw const RemoteZipException(
++        'ZIP_MEMBER_AMBIGUOUS',
++        'The ZIP contains duplicate or conflicting member names or offsets.',
++      );
++    }
++    if (!_inBounds(
++      localOffset,
++      30 + nameLength + compressedSize,
++      directoryOffset,
++    )) {
++      _invalid('A ZIP member points outside the file data.');
++    }
++    entries.add(
++      _ZipEntry(
++        path: path,
++        rawName: rawName,
++        neededVersion: neededVersion,
++        flags: flags,
++        method: method,
++        crc: crc,
++        size: size,
++        compressedSize: compressedSize,
++        localOffset: localOffset,
++        directory: directory,
++        zip64Sizes: zip64Sizes,
++      ),
++    );
++    cursor += recordLength;
++  }
++  if (cursor != bytes.length) {
++    _invalid('The ZIP directory has unexpected records.');
++  }
++  return _ZipDirectory(entries, directoryOffset);
++}
++
++void _validateFlags(int flags) {
++  if ((flags & (1 | 0x40 | 0x2000)) != 0) {
++    _unsupported('Encrypted ZIP members are not supported.');
++  }
++  if ((flags & ~(0x6 | 0x8 | 0x800)) != 0) {
++    _unsupported('This ZIP member flag is not supported.');
++  }
++}
++
++Map<int, Uint8List> _extras(Uint8List bytes) {
++  final result = <int, Uint8List>{};
++  var offset = 0;
++  while (offset < bytes.length) {
++    if (!_inBounds(offset, 4, bytes.length)) _invalid();
++    final id = _u16(bytes, offset);
++    final size = _u16(bytes, offset + 2);
++    offset += 4;
++    if (!_inBounds(offset, size, bytes.length) || result.containsKey(id)) {
++      _invalid('The ZIP contains conflicting extra fields.');
++    }
++    result[id] = Uint8List.sublistView(bytes, offset, offset + size);
++    offset += size;
++  }
++  return result;
++}
++
++// ZIP's legacy filename encoding is CP437, not Latin-1 and not URI encoding.
++const _cp437 =
++    'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»'
++    '░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌'
++    '█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
++
++String _decodeName(Uint8List raw, int flags, Map<int, Uint8List> extras) {
++  String name;
++  try {
++    name = flags & 0x800 != 0
++        ? utf8.decode(raw)
++        : String.fromCharCodes(
++            raw.map((b) => b < 128 ? b : _cp437.codeUnitAt(b - 128)),
++          );
++    final unicode = extras[0x7075];
++    if (unicode != null && unicode.length >= 5 && unicode[0] == 1) {
++      final crc = _Crc32()..add(raw);
++      if (_u32(unicode, 1) == crc.value) {
++        final unicodeName = utf8.decode(Uint8List.sublistView(unicode, 5));
++        // The original name must also be safe, even if a Unicode alias is used.
++        _safePath(name, directory: name.endsWith('/') || name.endsWith('\\'));
++        if ((flags & 0x800) != 0 && name != unicodeName) _invalid();
++        name = unicodeName;
++      }
++    }
++  } on FormatException {
++    _invalid('The ZIP has an invalid filename encoding.');
++  }
++  return name;
++}
++
++String _safePath(String value, {required bool directory}) {
++  var path = value.replaceAll('\\', '/');
++  if (path.isEmpty ||
++      path.startsWith('/') ||
++      RegExp(r'[\x00-\x1f\x7f]').hasMatch(path)) {
++    throw const RemoteZipException(
++      'ZIP_UNSAFE_PATH',
++      'The ZIP contains an unsafe member path.',
++    );
++  }
++  while (path.startsWith('./')) {
++    path = path.substring(2);
++  }
++  if (directory && path.endsWith('/')) {
++    path = path.substring(0, path.length - 1);
++  }
++  final components = path.split('/');
++  if (components.any(
++    (part) =>
++        part == '.' || part == '..' || isUnsafeWindowsArchiveComponent(part),
++  )) {
++    throw const RemoteZipException(
++      'ZIP_UNSAFE_PATH',
++      'The ZIP contains an unsafe member path.',
++    );
++  }
++  return normalizeTorrentFilePath(path);
++}
++
++_ZipEntry _selectEntry(
++  List<_ZipEntry> entries,
++  TorrentFileSelectionProof proof,
++) {
++  final files = entries.where((entry) => !entry.directory).toList();
++  final requested = proof.filePath;
++  final direct = files.where((entry) {
++    if (entry.size != proof.expectedSize) return false;
++    if (entry.path == requested) return true;
++    // A filename alone is the fallback below, and needs collection evidence.
++    return entry.path.contains('/') &&
++        requested.contains('/') &&
++        (entry.path.endsWith('/$requested') ||
++            requested.endsWith('/${entry.path}'));
++  }).toList();
++  if (direct.length == 1) return _supportedMember(direct.single);
++  if (direct.length > 1) {
++    throw const RemoteZipException(
++      'ZIP_MEMBER_AMBIGUOUS',
++      'More than one ZIP member matches the selected catalog path and size.',
++    );
++  }
++  var total = 0;
++  for (final entry in files) {
++    if (entry.size > _maxInteger - total) _invalid();
++    total += entry.size;
++  }
++  if (files.length == proof.fileCount &&
++      total == proof.totalSize &&
++      proof.uniqueFilename) {
++    final basename = p.posix.basename(requested);
++    final candidates = files
++        .where(
++          (entry) =>
++              entry.size == proof.expectedSize &&
++              p.posix.basename(entry.path) == basename,
++        )
++        .toList();
++    if (candidates.length == 1) return _supportedMember(candidates.single);
++    if (candidates.length > 1) {
++      throw const RemoteZipException(
++        'ZIP_MEMBER_AMBIGUOUS',
++        'More than one ZIP member matches the selected filename and size.',
++      );
++    }
++  }
++  throw const RemoteZipException(
++    'ZIP_MEMBER_NOT_FOUND',
++    'The selected catalog file could not be identified safely inside the cached ZIP.',
++  );
++}
++
++_ZipEntry _supportedMember(_ZipEntry entry) {
++  if ((entry.method != 0 && entry.method != 8) || entry.neededVersion > 45) {
++    _unsupported(
++      'The selected ZIP member uses an unsupported compression method.',
++    );
++  }
++  return entry;
++}
++
++Future<int> _validateLocalEntry(
++  _RangeReader reader,
++  _ZipDirectory directory,
++  _ZipEntry entry,
++) async {
++  var nextOffset = directory.offset;
++  for (final other in directory.entries) {
++    if (other.localOffset > entry.localOffset) {
++      nextOffset = math.min(nextOffset, other.localOffset);
++    }
++  }
++  if (!_inBounds(entry.localOffset, 30, nextOffset)) _invalid();
++  final header = await reader.read(entry.localOffset, 30);
++  if (_u32(header, 0) != _localSignature ||
++      _u16(header, 4) != entry.neededVersion ||
++      _u16(header, 6) != entry.flags ||
++      _u16(header, 8) != entry.method) {
++    _invalid('The ZIP local header disagrees with its directory.');
++  }
++  final localCrc = _u32(header, 14);
++  final compressed32 = _u32(header, 18);
++  final size32 = _u32(header, 22);
++  final nameLength = _u16(header, 26);
++  final extraLength = _u16(header, 28);
++  final dataOffset = entry.localOffset + 30 + nameLength + extraLength;
++  if (nameLength != entry.rawName.length ||
++      !_inBounds(
++        entry.localOffset + 30,
++        nameLength + extraLength,
++        nextOffset,
++      ) ||
++      !_inBounds(dataOffset, entry.compressedSize, nextOffset)) {
++    _invalid('The ZIP member has inconsistent data bounds.');
++  }
++  final variable = await reader.read(
++    entry.localOffset + 30,
++    nameLength + extraLength,
++  );
++  for (var i = 0; i < nameLength; i++) {
++    if (variable[i] != entry.rawName[i]) {
++      _invalid('The ZIP member names disagree.');
++    }
++  }
++  final extras = _extras(Uint8List.sublistView(variable, nameLength));
++  if (extras.containsKey(0x9901)) {
++    _unsupported('Encrypted ZIP members are not supported.');
++  }
++  if (extras.containsKey(0x7075)) {
++    final decoded = _decodeName(
++      Uint8List.sublistView(variable, 0, nameLength),
++      entry.flags,
++      extras,
++    );
++    if (_safePath(decoded, directory: false) != entry.path) _invalid();
++  }
++  final wide = size32 == 0xffffffff || compressed32 == 0xffffffff;
++  var size = size32;
++  var compressed = compressed32;
++  if (wide) {
++    final zip64 = extras[1];
++    if (zip64 == null) _invalid();
++    var cursor = 0;
++    if (size32 == 0xffffffff) {
++      size = _u64(zip64, cursor);
++      cursor += 8;
++    }
++    if (compressed32 == 0xffffffff) compressed = _u64(zip64, cursor);
++  }
++  final descriptor = entry.flags & 8 != 0;
++  if ((!descriptor &&
++          (localCrc != entry.crc ||
++              size != entry.size ||
++              compressed != entry.compressedSize)) ||
++      (descriptor &&
++          ((localCrc != 0 && localCrc != entry.crc) ||
++              (size != 0 && size != entry.size) ||
++              (compressed != 0 && compressed != entry.compressedSize)))) {
++    _invalid('The ZIP member sizes or checksum disagree.');
++  }
++  if (descriptor) {
++    final offset = dataOffset + entry.compressedSize;
++    final length = math.min(24, nextOffset - offset);
++    if (length < 12) _invalid('The ZIP data descriptor is missing.');
++    final bytes = await reader.read(offset, length);
++    final zip64 = wide || entry.zip64Sizes;
++    bool matches(int start) {
++      final required = zip64 ? 20 : 12;
++      if (!_inBounds(start, required, bytes.length) ||
++          _u32(bytes, start) != entry.crc) {
++        return false;
++      }
++      final compressed = zip64
++          ? _u64(bytes, start + 4)
++          : _u32(bytes, start + 4);
++      final size = zip64 ? _u64(bytes, start + 12) : _u32(bytes, start + 8);
++      return compressed == entry.compressedSize && size == entry.size;
++    }
++
++    final unsigned = matches(0);
++    final signed = _u32(bytes, 0) == _descriptorSignature && matches(4);
++    if (unsigned == signed) {
++      _invalid('The ZIP data descriptor is invalid or ambiguous.');
++    }
++  }
++  return dataOffset;
++}
++
++/// Every read remains a bounded byte range, including on redirects and errors.
++/// If a server supplies no strong validator, local/directory agreement and the
++/// final exact size + CRC remain mandatory; CRC is not cryptographic identity.
++final class _RangeReader {
++  _RangeReader(this.dio, RemoteZipTarget target, this.cancelToken)
++    : size = target.archiveSize,
++      _url = target.url;
++
++  final Dio dio;
++  final int size;
++  final CancelToken cancelToken;
++  String _url;
++  String? _etag;
++  String? _lastModified;
++  var _requests = 0;
++
++  Future<Uint8List> read(int start, int length) async {
++    if (length > _maxDirectoryBytes) _invalid();
++    final result = BytesBuilder(copy: false);
++    await for (final chunk in stream(start, length)) {
++      result.add(chunk);
++    }
++    return result.takeBytes();
++  }
++
++  Stream<Uint8List> stream(int start, int length) async* {
++    final requests = _RangeCancellation(cancelToken);
++    try {
++      yield* _stream(start, length, requests);
++    } finally {
++      // Pinned Dio's response wrapper does not propagate a subscription cancel
++      // to the adapter. Abort our private request, including when a consumer
++      // rejects a chunk. The caller's token is reserved for task stop intent.
++      requests.stop();
++    }
++  }
++
++  Stream<Uint8List> _stream(
++    int start,
++    int length,
++    _RangeCancellation requests,
++  ) async* {
++    _checkCancelled(cancelToken);
++    if (length <= 0 || !_inBounds(start, length, size)) _invalid();
++    final end = start + length - 1;
++    Response<ResponseBody>? response;
++    for (var redirects = 0; redirects <= 5; redirects++) {
++      if (++_requests > 32) {
++        throw const RemoteZipException(
++          'ZIP_RANGE_LIMIT',
++          'The ZIP exceeded its range-request limit.',
++        );
++      }
++      final uri = Uri.tryParse(_url);
++      if (uri == null ||
++          !uri.hasAuthority ||
++          uri.userInfo.isNotEmpty ||
++          (uri.scheme != 'https' &&
++              !(uri.scheme == 'http' &&
++                  (uri.host == '127.0.0.1' ||
++                      uri.host == '::1' ||
++                      uri.host == 'localhost')))) {
++        throw const RemoteZipException(
++          'ZIP_URL_INVALID',
++          'The ZIP download address is not supported.',
++        );
++      }
++      final strongEtag = _strongEtag(_etag);
++      response = await dio.get<ResponseBody>(
++        _url,
++        cancelToken: requests.next(),
++        options: Options(
++          connectTimeout: const Duration(seconds: 20),
++          sendTimeout: const Duration(seconds: 20),
++          receiveTimeout: const Duration(seconds: 30),
++          responseType: ResponseType.stream,
++          followRedirects: false,
++          receiveDataWhenStatusError: false,
++          validateStatus: (status) =>
++              status != null &&
++              ((status >= 200 && status < 400) || status == 412),
++          headers: {
++            'Range': 'bytes=$start-$end',
++            'Accept-Encoding': 'identity',
++            // The signed URL is the only download authority. Do not inherit
++            // unrelated account headers from a shared Dio instance.
++            'Authorization': null,
++            'Cookie': null,
++            if (strongEtag) 'If-Match': _etag,
++            if (!strongEtag && _lastModified != null)
++              'If-Unmodified-Since': _lastModified,
++          },
++        ),
++      );
++      if (![301, 302, 303, 307, 308].contains(response.statusCode)) break;
++      Uri? next;
++      try {
++        final location = _header(response, 'location');
++        next = location == null ? null : uri.resolve(location);
++      } on FormatException {
++        throw const RemoteZipException(
++          'ZIP_REDIRECT_INVALID',
++          'The ZIP download redirect could not be followed safely.',
++        );
++      } finally {
++        requests.stop();
++        await response.data?.stream
++            .listen(null, onError: (Object _) {})
++            .cancel();
++      }
++      if (redirects == 5 ||
++          next == null ||
++          next.userInfo.isNotEmpty ||
++          (uri.scheme == 'https' && next.scheme != 'https')) {
++        throw const RemoteZipException(
++          'ZIP_REDIRECT_INVALID',
++          'The ZIP download redirect could not be followed safely.',
++        );
++      }
++      _url = next.toString();
++      _checkCancelled(cancelToken);
++    }
++    final reply = response!;
++    final body = reply.data;
++    try {
++      if (reply.statusCode == 412) {
++        throw const RemoteZipException(
++          'ZIP_CHANGED',
++          'The cached ZIP changed while it was being read. Please retry.',
++        );
++      }
++      if (reply.statusCode != 206 || body == null) {
++        throw const RemoteZipException(
++          'ZIP_RANGE_UNSUPPORTED',
++          'The download server does not support bounded ZIP ranges. The collection was not downloaded.',
++        );
++      }
++      final range = RegExp(
++        r'^bytes (\d+)-(\d+)/(\d+)$',
++        caseSensitive: false,
++      ).firstMatch(_header(reply, 'content-range')?.trim() ?? '');
++      final contentLength = _header(reply, 'content-length');
++      final encoding = _header(reply, 'content-encoding')?.trim().toLowerCase();
++      final type = _header(reply, 'content-type')?.toLowerCase();
++      if (range == null ||
++          int.tryParse(range[1]!) != start ||
++          int.tryParse(range[2]!) != end ||
++          int.tryParse(range[3]!) != size ||
++          (contentLength != null && int.tryParse(contentLength) != length) ||
++          (encoding != null && encoding != 'identity') ||
++          (type != null && type.startsWith('multipart/'))) {
++        throw const RemoteZipException(
++          'ZIP_RANGE_INVALID',
++          'The download server returned an inconsistent ZIP byte range.',
++        );
++      }
++      final etag = _header(reply, 'etag');
++      final modified = _header(reply, 'last-modified');
++      if ((etag != null && etag.length > 1024) ||
++          (_strongEtag(_etag) && etag != _etag) ||
++          (_etag != null && etag != null && _etag != etag) ||
++          (_lastModified != null &&
++              modified != null &&
++              _lastModified != modified)) {
++        throw const RemoteZipException(
++          'ZIP_CHANGED',
++          'The cached ZIP changed while it was being read. Please retry.',
++        );
++      }
++      _etag ??= etag;
++      if (modified != null) {
++        try {
++          HttpDate.parse(modified);
++          _lastModified ??= modified;
++        } on HttpException {
++          // An invalid optional date must never become a request header.
++        }
++      }
++    } catch (_) {
++      requests.stop();
++      await body?.stream.listen(null, onError: (Object _) {}).cancel();
++      rethrow;
++    }
++    var received = 0;
++    final boundedStream = body.stream.timeout(
++      const Duration(seconds: 30),
++      onTimeout: (sink) {
++        sink.addError(
++          DioException.receiveTimeout(
++            timeout: const Duration(seconds: 30),
++            requestOptions: reply.requestOptions,
++          ),
++        );
++        sink.close();
++      },
++    );
++    await for (final chunk in boundedStream) {
++      _checkCancelled(cancelToken);
++      if (chunk.length > length - received) {
++        throw const RemoteZipException(
++          'ZIP_RANGE_INVALID',
++          'A ZIP byte range exceeded its declared length.',
++        );
++      }
++      received += chunk.length;
++      yield chunk;
++    }
++    _checkCancelled(cancelToken);
++    if (received != length) {
++      throw const RemoteZipException(
++        'ZIP_RANGE_INVALID',
++        'A ZIP byte range ended before its declared length.',
++      );
++    }
++  }
++}
++
++final class _RangeCancellation {
++  _RangeCancellation(CancelToken parent) {
++    unawaited(
++      parent.whenCancel.then<void>((reason) {
++        _current?.cancel(reason);
++      }),
++    );
++  }
++
++  CancelToken? _current;
++
++  CancelToken next() {
++    stop();
++    return _current = CancelToken();
++  }
++
++  void stop() {
++    final token = _current;
++    _current = null;
++    token?.cancel('ZIP byte range closed');
++  }
++}
++
++bool _strongEtag(String? value) =>
++    value != null && RegExp(r'^"[\x21\x23-\x7e\x80-\xff]*"$').hasMatch(value);
++
++String? _header(Response<ResponseBody> response, String name) {
++  final values = response.headers[name];
++  if (values == null || values.isEmpty) return null;
++  if (values.length != 1 || RegExp(r'[\r\n]').hasMatch(values.single)) {
++    throw const RemoteZipException(
++      'ZIP_RANGE_INVALID',
++      'The ZIP response contains conflicting headers.',
++    );
++  }
++  return values.single;
++}
++
++Stream<List<int>> _smallChunks(Stream<Uint8List> source) async* {
++  await for (final chunk in source) {
++    for (var start = 0; start < chunk.length; start += 4096) {
++      yield Uint8List.sublistView(
++        chunk,
++        start,
++        math.min(start + 4096, chunk.length),
++      );
++    }
++  }
++}
++
++Stream<List<int>> _inflate(Stream<List<int>> input) async* {
++  try {
++    // await-for turns decoder error events into exceptions handled here.
++    // yield* would forward them directly, bypassing the safe failure mapping.
++    await for (final chunk in ZLibDecoder(raw: true).bind(input)) {
++      yield chunk;
++    }
++  } on DioException {
++    rethrow;
++  } on RemoteZipException {
++    rethrow;
++  } catch (_) {
++    throw const RemoteZipException(
++      'ZIP_DEFLATE_INVALID',
++      'The selected ZIP member could not be decompressed.',
++    );
++  }
++}
++
++final class _Crc32 {
++  static final _table = List<int>.generate(256, (value) {
++    var crc = value;
++    for (var bit = 0; bit < 8; bit++) {
++      crc = (crc & 1) != 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
++    }
++    return crc;
++  }, growable: false);
++
++  var _crc = 0xffffffff;
++  void add(List<int> bytes) {
++    for (final byte in bytes) {
++      _crc = _table[(_crc ^ byte) & 0xff] ^ (_crc >>> 8);
++    }
++  }
++
++  int get value => (_crc ^ 0xffffffff) & 0xffffffff;
++}
 diff --git a/lib/services/rom_database_service.dart b/lib/services/rom_database_service.dart
 --- a/lib/services/rom_database_service.dart
 +++ b/lib/services/rom_database_service.dart
@@ -6175,7 +7808,7 @@ diff --git a/pubspec.yaml b/pubspec.yaml
  description: "NOMROM game browser and download library for Windows, macOS and Android"
  publish_to: 'none'
 -version: 1.10.2+23
-+version: 1.10.5+26
++version: 1.10.6+27
  
  environment:
    sdk: ^3.10.1
@@ -6540,18 +8173,19 @@ new file mode 100644
 diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_test.dart
 --- a/test/debrid/debrid_service_test.dart
 +++ b/test/debrid/debrid_service_test.dart
-@@ -1,7 +1,10 @@
+@@ -1,7 +1,11 @@
  import 'dart:async';
 +
  import 'package:flutter_test/flutter_test.dart';
  import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 +import 'package:romgi/models/debrid_failure_details.dart';
  import 'package:romgi/models/models.dart';
++import 'package:romgi/models/remote_zip_target.dart';
 +import 'package:romgi/models/torrent_file_selection_proof.dart';
  import 'package:romgi/services/debrid/debrid_provider.dart';
  import 'package:romgi/services/debrid/debrid_registry.dart';
  import 'package:romgi/services/debrid_service.dart';
-@@ -50,7 +53,52 @@
+@@ -50,7 +54,52 @@
  
    @override
    Future<TorrentMetadata?> getTorrentMetadata(String infohash) async => meta;
@@ -6604,7 +8238,7 @@ diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_t
  
  class _ControlledStorage extends InMemorySecureStorage {
    _ControlledStorage(super.store);
-@@ -111,7 +159,7 @@
+@@ -111,7 +160,7 @@
    storage: storage,
  );
  
@@ -6613,7 +8247,7 @@ diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_t
    name: 'Game',
    type: 'Game',
    format: 'iso',
-@@ -122,7 +170,7 @@
+@@ -122,7 +171,7 @@
    sizeStr: '100',
    sourceUrl: '',
    torrentInfohash: _hash,
@@ -6622,7 +8256,7 @@ diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_t
  );
  
  DebridService _service(_FakeProvider provider, {TorrentMetadata? meta}) =>
-@@ -133,6 +181,120 @@
+@@ -133,6 +182,213 @@
      );
  
  void main() {
@@ -6638,6 +8272,99 @@ diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_t
 +      );
 +      await service.setCredentials(providerId: provider.id, apiKey: 'test-key');
 +      return service;
++    }
++
++    test(
++      'remote ZIP resolution preserves the original persisted selection',
++      () async {
++        final proof = _catalogProof();
++        const secret = 'test-key';
++        const url = 'https://cdn.example/collection.zip?token=$secret';
++        final details = DebridFailureDetails.torbox(
++          stage: DebridFailureStage.archiveMember,
++          code: 'ARCHIVE_MEMBER',
++          requestedPath: 'Collection/$secret/game.iso',
++          expectedSize: 100,
++          providerFileCount: 1,
++          files: [
++            DebridDiagnosticFile(
++              name: 'Collection.zip',
++              size: 4208534228,
++              zipped: true,
++            ),
++          ],
++        );
++        final provider = _FakeProvider([
++          DebridReady(
++            url,
++            size: 100,
++            remoteZip: RemoteZipTarget(
++              url: url,
++              archiveSize: 4208534228,
++              selectionProof: proof,
++              diagnostics: details,
++            ),
++          ),
++        ], id: 'torbox');
++        final service = await configured(
++          provider,
++          _ProofRomDb(() async => proof),
++        );
++        final original = _torrentLink();
++        final resolved = (await service.resolveTorrentLink(original))!;
++        expect(resolved.toJson(), original.toJson());
++        expect(resolved.url, original.url);
++        expect(resolved.filename, original.filename);
++        expect(resolved.size, 100);
++        expect(resolved.debridResolved, isFalse);
++        expect(resolved.isTorrent, isFalse);
++        expect(resolved.remoteZip!.url, url);
++        expect(
++          resolved.remoteZip!.diagnostics!.toReport(),
++          isNot(contains(secret)),
++        );
++        expect(
++          resolved.remoteZip!.diagnostics!.toReport(),
++          contains('[redacted]'),
++        );
++        final restored = DownloadLink.fromJson(resolved.toJson());
++        expect(restored.isTorrent, isTrue);
++        expect(restored.remoteZip, isNull);
++      },
++    );
++
++    for (final invalid in [
++      'missing proof',
++      'wrong size',
++      'wrong URL',
++      'wrong provider',
++    ]) {
++      test('rejects an unbound archive target: $invalid', () async {
++        final proof = _catalogProof();
++        final archive = RemoteZipTarget(
++          url: invalid == 'wrong URL'
++              ? 'https://other.example/file.zip'
++              : 'https://cdn.example/file.zip',
++          archiveSize: invalid == 'wrong size' ? 0 : 4208534228,
++          selectionProof: proof,
++        );
++        final provider = _FakeProvider([
++          DebridReady('https://cdn.example/file.zip', remoteZip: archive),
++        ], id: invalid == 'wrong provider' ? 'fake' : 'torbox');
++        final service = await configured(
++          provider,
++          _ProofRomDb(() async => invalid == 'missing proof' ? null : proof),
++        );
++        final failures = <DebridError>[];
++        expect(
++          await service.resolveTorrentLink(
++            _torrentLink(),
++            onFailure: failures.add,
++          ),
++          isNull,
++        );
++        expect(failures.single.code, 'ARCHIVE_IDENTITY_MISMATCH');
++      });
 +    }
 +
 +    test(
@@ -6743,7 +8470,7 @@ diff --git a/test/debrid/debrid_service_test.dart b/test/debrid/debrid_service_t
    test(
      'a typed draft key is trimmed and tested without reading or saving Keychain state',
      () async {
-@@ -527,4 +689,306 @@
+@@ -527,4 +783,306 @@
      await service.clearCredentials();
      expect(service.isConfiguredSync(), isFalse);
    });
@@ -7679,6 +9406,785 @@ new file mode 100644
 +    expect(transport.calls, isEmpty);
 +  });
 +}
+diff --git a/test/debrid/remote_zip_download_integration_test.dart b/test/debrid/remote_zip_download_integration_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/debrid/remote_zip_download_integration_test.dart
+@@ -0,0 +1,774 @@
++import 'dart:async';
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:dio/dio.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:romgi/models/debrid_failure_details.dart';
++import 'package:romgi/models/models.dart';
++import 'package:romgi/models/remote_zip_target.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++import 'package:romgi/services/debrid/debrid_provider.dart';
++import 'package:romgi/services/debrid_service.dart';
++import 'package:romgi/services/download_service.dart';
++import 'package:romgi/services/host_adapter.dart';
++import 'package:romgi/services/link_resolver.dart';
++import 'package:romgi/services/remote_zip_service.dart';
++
++import '../download_integrity_test.dart' as fixture;
++import 'debrid_test_utils.dart';
++
++const _hash = 'abcdef0123456789abcdef0123456789abcdef01';
++const _signedUrl =
++    'https://cdn.example.invalid/collection.zip?token=private-url';
++const _member = <int>[80, 75, 3, 4, 5, 6];
++
++DownloadLink _link(String name) => DownloadLink(
++  name: name,
++  type: 'Game',
++  format: 'zip',
++  url: '',
++  filename: '$name.zip',
++  host: 'MiNERVA',
++  size: _member.length,
++  sizeStr: '6 B',
++  sourceUrl: 'https://catalog.example.invalid/',
++  sourceId: 'minerva',
++  torrentInfohash: _hash,
++  torrentFileIndex: 0,
++  torrentFilePath: 'No-Intro/SNES/$name.zip',
++);
++
++RemoteZipTarget _target(DownloadLink link, {String url = _signedUrl}) {
++  final path = link.torrentFilePath!;
++  return RemoteZipTarget(
++    url: url,
++    archiveSize: 4208534228,
++    selectionProof: TorrentFileSelectionProof.tryCreate(
++      infohash: link.torrentInfohash!,
++      fileIndex: link.torrentFileIndex!,
++      filePath: path,
++      expectedSize: link.size,
++      members: [
++        TorrentFileIdentity(index: 0, path: path, size: link.size),
++        const TorrentFileIdentity(index: 1, path: 'Other.zip', size: 1000),
++      ],
++    )!,
++    diagnostics: DebridFailureDetails.torbox(
++      stage: DebridFailureStage.fileSelection,
++      code: 'FILE_NOT_FOUND',
++      requestedPath: path,
++      expectedSize: link.size,
++      providerFileCount: 1,
++      files: [
++        DebridDiagnosticFile(
++          name: '/private/provider/Minerva_Myrient.zip',
++          size: 4208534228,
++          zipped: true,
++        ),
++      ],
++    ).sanitized('test-api-key'),
++  );
++}
++
++DownloadTask _task(String name) => DownloadTask(
++  id: name,
++  slug: name,
++  title: name,
++  platform: 'snes',
++  link: _link(name),
++  createdAt: DateTime(2026),
++);
++
++class _Database extends fixture.FakeDatabaseService {
++  final writes = <Map<String, dynamic>>[];
++  Completer<void>? emptyPendingQueryGate;
++  Completer<void>? emptyPendingQueryStarted;
++
++  @override
++  Future<void> updateDownload(DownloadTask task) async {
++    final map = task.toMap();
++    writes.add(map);
++    rows[task.id] = DownloadTask.fromMap(map);
++  }
++
++  @override
++  Future<List<DownloadTask>> getDownloadsByStatus(DownloadStatus status) {
++    final gate = emptyPendingQueryGate;
++    if (status == DownloadStatus.pending &&
++        gate != null &&
++        !rows.values.any((task) => task.status == DownloadStatus.pending)) {
++      // Return the empty snapshot from before resume, after it has made the
++      // row pending. A concurrent wake-up must trigger a fresh queue query.
++      emptyPendingQueryGate = null;
++      emptyPendingQueryStarted?.complete();
++      return gate.future.then((_) => <DownloadTask>[]);
++    }
++    return super.getDownloadsByStatus(status);
++  }
++}
++
++class _Debrid extends Fake implements DebridService {
++  final calls = <String, int>{};
++  RemoteZipTarget Function(DownloadLink)? targetFor;
++
++  @override
++  Future<bool> isConfigured({String? providerId}) async => true;
++
++  @override
++  Future<DownloadLink?> resolveTorrentLink(
++    DownloadLink link, {
++    void Function(DebridCaching status)? onCaching,
++    void Function(DebridError failure)? onFailure,
++    bool Function()? isCancelled,
++    Duration overallTimeout = const Duration(minutes: 3),
++    Duration pollInterval = const Duration(seconds: 2),
++  }) async {
++    final attempt = calls.update(
++      link.filename,
++      (value) => value + 1,
++      ifAbsent: () => 1,
++    );
++    return link.copyWith(
++      remoteZip:
++          targetFor?.call(link) ?? _target(link, url: '$_signedUrl-$attempt'),
++    );
++  }
++}
++
++class _Transfer {
++  final started = Completer<void>();
++  final release = Completer<void>();
++  final finished = Completer<void>();
++  bool ignoreCancellation = false;
++  Object? failure;
++  List<int> bytes = _member;
++  late File destination;
++  late CancelToken token;
++  late RemoteZipTarget target;
++}
++
++class _RemoteZip extends Fake implements RemoteZipService {
++  final plans = <_Transfer>[];
++  final calls = <_Transfer>[];
++
++  _Transfer plan({Object? failure, bool releaseImmediately = false}) {
++    final transfer = _Transfer()..failure = failure;
++    if (releaseImmediately) transfer.release.complete();
++    plans.add(transfer);
++    return transfer;
++  }
++
++  @override
++  Future<void> download({
++    required RemoteZipTarget target,
++    required File destination,
++    required CancelToken cancelToken,
++    required ProgressCallback onReceiveProgress,
++  }) async {
++    final transfer = plans[calls.length]
++      ..destination = destination
++      ..token = cancelToken
++      ..target = target;
++    calls.add(transfer);
++    try {
++      await destination.writeAsBytes([80]);
++      onReceiveProgress(1, target.selectionProof.expectedSize);
++      transfer.started.complete();
++      if (transfer.ignoreCancellation) {
++        await transfer.release.future;
++      } else {
++        await Future.any([
++          transfer.release.future,
++          cancelToken.whenCancel.then<void>((_) {}),
++        ]);
++        if (cancelToken.isCancelled) throw cancelToken.cancelError!;
++      }
++      if (transfer.failure != null) throw transfer.failure!;
++      await destination.writeAsBytes(transfer.bytes);
++      onReceiveProgress(
++        transfer.bytes.length,
++        target.selectionProof.expectedSize,
++      );
++    } finally {
++      transfer.finished.complete();
++    }
++  }
++}
++
++class _Torrents extends fixture.RecordingTorrentService {
++  int pauseCalls = 0;
++  int cancelCalls = 0;
++
++  @override
++  Future<void> pauseAll() async => pauseCalls++;
++
++  @override
++  Future<void> resumeAll() async {}
++
++  @override
++  Future<void> cancel(String infohash) async => cancelCalls++;
++}
++
++final class _PublicationIO extends IOOverrides {
++  _PublicationIO(this.destination, {this.blockType = false});
++
++  final String destination;
++  final bool blockType;
++  final typeStarted = Completer<void>();
++  final releaseType = Completer<void>();
++  int syncRenames = 0;
++  int asyncRenames = 0;
++
++  @override
++  File createFile(String path) {
++    final file = super.createFile(path);
++    return path.contains('.nomrom-zip-member-') &&
++            path.replaceAll('\\', '/').endsWith('/member')
++        ? _PublicationFile(file, this)
++        : file;
++  }
++
++  @override
++  Future<FileSystemEntityType> fseGetType(String path, bool followLinks) async {
++    if (blockType && path == destination && !typeStarted.isCompleted) {
++      typeStarted.complete();
++      await releaseType.future;
++    }
++    return super.fseGetType(path, followLinks);
++  }
++}
++
++class _PublicationFile extends Fake implements File {
++  _PublicationFile(this.file, this.owner);
++  final File file;
++  final _PublicationIO owner;
++
++  @override
++  String get path => file.path;
++
++  @override
++  Future<int> length() => file.length();
++
++  @override
++  Future<File> writeAsBytes(
++    List<int> bytes, {
++    FileMode mode = FileMode.write,
++    bool flush = false,
++  }) => file.writeAsBytes(bytes, mode: mode, flush: flush);
++
++  @override
++  File renameSync(String newPath) {
++    owner.syncRenames++;
++    return file.renameSync(newPath);
++  }
++
++  @override
++  Future<File> rename(String newPath) async {
++    owner.asyncRenames++;
++    throw StateError('The final archive publication must not yield.');
++  }
++}
++
++Future<void> _until(bool Function() condition) async {
++  final end = DateTime.now().add(const Duration(seconds: 3));
++  while (!condition()) {
++    if (DateTime.now().isAfter(end)) fail('Archive transfer did not settle');
++    await Future<void>.delayed(const Duration(milliseconds: 5));
++  }
++}
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  late Directory temp;
++  late _Database db;
++  late _Debrid debrid;
++  late _RemoteZip remote;
++  late _Torrents torrents;
++  late fixture.FakeSevenZipService sevenZip;
++  late StubAdapter transport;
++  late DownloadService downloads;
++
++  DownloadService createDownloads() {
++    final service = DownloadService(
++      db: db,
++      romDb: fixture.FakeRomDatabaseService(),
++      storage: fixture.FakeStorageService(temp),
++      notifications: fixture.FakeNotificationService(),
++      adapters: HostAdapterRegistry(),
++      torrents: torrents,
++      sevenZip: sevenZip,
++      debrid: debrid,
++      remoteZipService: remote,
++      dio: Dio()..httpClientAdapter = transport,
++    );
++    service.shouldExtractForPlatform = (_) => false;
++    service.getLinkResolverPrefs = () =>
++        const LinkResolverPrefs(debridEnabled: true, torrentsDisabled: true);
++    return service;
++  }
++
++  bool stagingGone() => !temp.listSync().any(
++    (entity) =>
++        entity is Directory && entity.path.contains('.nomrom-zip-member-'),
++  );
++
++  setUp(() {
++    temp = Directory.systemTemp.createTempSync('nomrom-remote-zip-');
++    db = _Database()..servePendingQueue = true;
++    debrid = _Debrid();
++    remote = _RemoteZip();
++    torrents = _Torrents();
++    sevenZip = fixture.FakeSevenZipService();
++    transport = StubAdapter({});
++    downloads = createDownloads();
++  });
++
++  tearDown(() async {
++    downloads.dispose();
++    for (final transfer in remote.plans) {
++      if (!transfer.release.isCompleted) transfer.release.complete();
++    }
++    await Future.wait(remote.calls.map((call) => call.finished.future));
++    await _until(stagingGone);
++    await torrents.progress.close();
++    await torrents.errors.close();
++    temp.deleteSync(recursive: true);
++  });
++
++  test(
++    'archive target changes only runtime routing and is never serialized',
++    () {
++      final original = _link('Mario');
++      final target = _target(original);
++      final active = original.copyWith(remoteZip: target);
++      expect(active.isTorrent, isFalse);
++      expect(active.debridResolved, isFalse);
++      expect(active.toJson(), original.toJson());
++      expect(DownloadLink.fromJson(active.toJson()).isTorrent, isTrue);
++      expect(DownloadLink.fromJson(active.toJson()).remoteZip, isNull);
++      final task = _task('Mario').copyWith(link: active);
++      expect(task.copyWith(progress: .5).link.remoteZip, same(target));
++      final stored = task.toMap();
++      expect(jsonEncode(stored), isNot(contains('private-url')));
++      expect(stored['link_url'], original.url);
++      expect(stored['link_size'], original.size);
++      expect(stored['link_debrid_resolved'], 0);
++      final restored = DownloadTask.fromMap(stored);
++      expect(restored.link.remoteZip, isNull);
++      expect(restored.link.isTorrent, isTrue);
++      expect(restored.link.torrentFilePath, original.torrentFilePath);
++      expect(active.copyWith().remoteZip, isNull);
++      expect(active.copyWith(url: 'https://other.invalid/').remoteZip, isNull);
++      expect(active.copyWith(remoteZip: target).remoteZip, same(target));
++    },
++  );
++
++  test(
++    'member transfer preserves catalog size and never uses ordinary HTTP',
++    () async {
++      final transfer = remote.plan();
++      final events = <DownloadTask>[];
++      final subscription = downloads.downloadStream.listen(events.add);
++      addTearDown(subscription.cancel);
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await transfer.started.future;
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++      expect(transfer.destination.path, contains('.nomrom-zip-member-'));
++      transfer.release.complete();
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.completed);
++      await _until(stagingGone);
++      expect(File(p.join(temp.path, 'Mario.zip')).readAsBytesSync(), _member);
++      expect(db.rows['Mario']!.totalBytes, _member.length);
++      expect(db.rows['Mario']!.filePath, p.join(temp.path, 'Mario.zip'));
++      expect(transport.calls, isEmpty);
++      expect(torrents.added, isEmpty);
++      expect(torrents.cancelCalls, 0);
++      expect(
++        events.any(
++          (task) => task.link.remoteZip != null && !task.link.isTorrent,
++        ),
++        isTrue,
++      );
++      expect(
++        db.writes.every(
++          (map) => map['link_url'] == '' && map['link_size'] == _member.length,
++        ),
++        isTrue,
++      );
++      expect(jsonEncode(db.writes), isNot(contains('private-url')));
++      expect(
++        db.writes.every((map) => map['link_debrid_resolved'] == 0),
++        isTrue,
++      );
++    },
++  );
++
++  test(
++    'verified inner ZIP uses the existing extraction and library completion',
++    () async {
++      downloads.shouldExtractForPlatform = (_) => true;
++      var extractions = 0;
++      sevenZip.onExtract = (archivePath, outputDir) async {
++        extractions++;
++        expect(archivePath, p.join(temp.path, 'Mario.zip'));
++        expect(File(archivePath).readAsBytesSync(), _member);
++        await File(p.join(outputDir, 'Mario.sfc')).writeAsBytes([1, 2, 3]);
++        return outputDir;
++      };
++      remote.plan(releaseImmediately: true);
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.completed);
++      expect(extractions, 1);
++      expect(db.rows['Mario']!.filePath, p.join(temp.path, 'Mario.sfc'));
++      expect(File(p.join(temp.path, 'Mario.sfc')).readAsBytesSync(), [1, 2, 3]);
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++      expect(transport.calls, isEmpty);
++    },
++  );
++
++  for (final mismatch in ['path', 'size', 'index', 'hash']) {
++    test('mismatched $mismatch proof is rejected before archive I/O', () async {
++      final selected = _link('Mario');
++      final other = DownloadLink(
++        name: selected.name,
++        type: selected.type,
++        format: selected.format,
++        url: selected.url,
++        filename: selected.filename,
++        host: selected.host,
++        size: mismatch == 'size' ? selected.size + 1 : selected.size,
++        sizeStr: selected.sizeStr,
++        sourceUrl: selected.sourceUrl,
++        torrentInfohash: mismatch == 'hash'
++            ? '1111111111111111111111111111111111111111'
++            : _hash,
++        torrentFileIndex: mismatch == 'index' ? 1 : 0,
++        torrentFilePath: mismatch == 'path'
++            ? 'Other/Mario.zip'
++            : selected.torrentFilePath,
++      );
++      final proof = TorrentFileSelectionProof.tryCreate(
++        infohash: other.torrentInfohash!,
++        fileIndex: other.torrentFileIndex!,
++        filePath: other.torrentFilePath!,
++        expectedSize: other.size,
++        members: mismatch == 'index'
++            ? [
++                const TorrentFileIdentity(
++                  index: 0,
++                  path: 'Other.zip',
++                  size: 1000,
++                ),
++                TorrentFileIdentity(
++                  index: 1,
++                  path: other.torrentFilePath!,
++                  size: other.size,
++                ),
++              ]
++            : [
++                TorrentFileIdentity(
++                  index: 0,
++                  path: other.torrentFilePath!,
++                  size: other.size,
++                ),
++              ],
++      )!;
++      debrid.targetFor = (_) => RemoteZipTarget(
++        url: _signedUrl,
++        archiveSize: 4208534228,
++        selectionProof: proof,
++      );
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.failed);
++      expect(db.rows['Mario']!.error, contains('ARCHIVE_TARGET_MISMATCH'));
++      expect(remote.calls, isEmpty);
++      expect(transport.calls, isEmpty);
++      expect(temp.listSync(), isEmpty);
++    });
++  }
++
++  test(
++    'member validation failure preserves destination and recodes safe details',
++    () async {
++      final existing = File(p.join(temp.path, 'Mario.zip'))
++        ..writeAsBytesSync([9, 9, 9]);
++      remote.plan(
++        releaseImmediately: true,
++        failure: const RemoteZipException(
++          'ARCHIVE_CRC_MISMATCH',
++          'The selected archive member failed its integrity check.',
++        ),
++      );
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.failed);
++      await _until(stagingGone);
++      final failed = db.rows['Mario']!;
++      expect(existing.readAsBytesSync(), [9, 9, 9]);
++      expect(failed.error, contains('ARCHIVE_CRC_MISMATCH'));
++      expect(failed.diagnostics!.stage, DebridFailureStage.archiveMember);
++      expect(failed.diagnostics!.code, 'ARCHIVE_CRC_MISMATCH');
++      expect(failed.diagnostics!.providerFileCount, 1);
++      expect(jsonEncode(failed.toMap()), isNot(contains('private-url')));
++      expect(failed.link.remoteZip, isNull);
++    },
++  );
++
++  test(
++    'generic transport errors never persist signed URLs or raw exceptions',
++    () async {
++      remote.plan(
++        releaseImmediately: true,
++        failure: StateError('request $_signedUrl Authorization: Bearer secret'),
++      );
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.failed);
++      expect(db.rows['Mario']!.error, contains('ARCHIVE_TRANSFER_FAILED'));
++      expect(jsonEncode(db.writes), isNot(contains('private-url')));
++      expect(jsonEncode(db.writes), isNot(contains('Bearer secret')));
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++    },
++  );
++
++  test(
++    'unsolicited transport cancellation fails safely and releases the queue',
++    () async {
++      final cancelled = remote.plan(
++        releaseImmediately: true,
++        failure: DioException(
++          requestOptions: RequestOptions(path: _signedUrl),
++          type: DioExceptionType.cancel,
++          message: 'Private transport cancellation at $_signedUrl',
++        ),
++      );
++      final next = remote.plan();
++      db.rows['Mario'] = _task('Mario');
++      db.rows['Zelda'] = _task('Zelda');
++      downloads.setMaxConcurrentDownloads(1);
++      await next.started.future;
++      expect(cancelled.token.isCancelled, isFalse);
++      expect(db.rows['Mario']!.status, DownloadStatus.failed);
++      expect(db.rows['Mario']!.error, contains('ARCHIVE_REQUEST_FAILED'));
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++      expect(jsonEncode(db.writes), isNot(contains('private-url')));
++      next.release.complete();
++      await _until(() => db.rows['Zelda']!.status == DownloadStatus.completed);
++    },
++  );
++
++  test(
++    'pause releases queue slot and resume obtains a fresh target for only the member',
++    () async {
++      final first = remote.plan();
++      final second = remote.plan();
++      final resumed = remote.plan();
++      db.rows['Mario'] = _task('Mario');
++      db.rows['Zelda'] = _task('Zelda');
++      downloads.setMaxConcurrentDownloads(1);
++      await first.started.future;
++      await downloads.pauseDownload('Mario');
++      await second.started.future;
++      expect(db.rows['Mario']!.status, DownloadStatus.paused);
++      expect(db.rows['Mario']!.downloadedBytes, 0);
++      expect(db.rows['Mario']!.link.isTorrent, isTrue);
++      expect(first.token.isCancelled, isTrue);
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++      expect(torrents.cancelCalls, 0);
++      await downloads.resumeDownload('Mario');
++      second.release.complete();
++      await resumed.started.future;
++      expect(debrid.calls['Mario.zip'], 2);
++      expect(resumed.target.url, isNot(first.target.url));
++      expect(
++        resumed.target.selectionProof.filePath,
++        first.target.selectionProof.filePath,
++      );
++      resumed.release.complete();
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.completed);
++      expect(File(p.join(temp.path, 'Mario.zip')).readAsBytesSync(), _member);
++      expect(remote.calls, hasLength(3));
++      expect(transport.calls, isEmpty);
++    },
++  );
++
++  for (final lateFailure in [false, true]) {
++    test(
++      'cancel discards late ${lateFailure ? 'failure' : 'success'} without publishing or reviving task',
++      () async {
++        final transfer = remote.plan(
++          failure: lateFailure
++              ? const RemoteZipException(
++                  'ARCHIVE_CRC_MISMATCH',
++                  'Integrity failed.',
++                )
++              : null,
++        )..ignoreCancellation = true;
++        final events = <DownloadTask>[];
++        final subscription = downloads.downloadStream.listen(events.add);
++        addTearDown(subscription.cancel);
++        db.rows['Mario'] = _task('Mario');
++        downloads.setMaxConcurrentDownloads(1);
++        await transfer.started.future;
++        await downloads.cancelDownload('Mario');
++        final atCancel = events.length;
++        transfer.release.complete();
++        await transfer.finished.future;
++        await _until(stagingGone);
++        expect(db.rows.containsKey('Mario'), isFalse);
++        expect(events.skip(atCancel), isEmpty);
++        expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++        expect(torrents.cancelCalls, 0);
++      },
++    );
++  }
++
++  test(
++    'cancel during the final destination check prevents publication',
++    () async {
++      final publication = _PublicationIO(
++        p.join(temp.path, 'Mario.zip'),
++        blockType: true,
++      );
++      addTearDown(() {
++        if (!publication.releaseType.isCompleted) {
++          publication.releaseType.complete();
++        }
++      });
++      await IOOverrides.runWithIOOverrides(() async {
++        remote.plan(releaseImmediately: true);
++        db.rows['Mario'] = _task('Mario');
++        downloads.setMaxConcurrentDownloads(1);
++        await publication.typeStarted.future;
++        await downloads.cancelDownload('Mario');
++        publication.releaseType.complete();
++        await _until(stagingGone);
++        expect(db.rows.containsKey('Mario'), isFalse);
++        expect(File(publication.destination).existsSync(), isFalse);
++        expect(publication.syncRenames, 0);
++        expect(publication.asyncRenames, 0);
++      }, publication);
++    },
++  );
++
++  test(
++    'validated member publishes without an asynchronous rename gap',
++    () async {
++      final publication = _PublicationIO(p.join(temp.path, 'Mario.zip'));
++      await IOOverrides.runWithIOOverrides(() async {
++        remote.plan(releaseImmediately: true);
++        db.rows['Mario'] = _task('Mario');
++        downloads.setMaxConcurrentDownloads(1);
++        await _until(
++          () => db.rows['Mario']!.status == DownloadStatus.completed,
++        );
++        expect(publication.syncRenames, 1);
++        expect(publication.asyncRenames, 0);
++        expect(File(publication.destination).readAsBytesSync(), _member);
++      }, publication);
++    },
++  );
++
++  test(
++    'application update cancels and drains member transfer without native torrent work',
++    () async {
++      final transfer = remote.plan();
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await transfer.started.future;
++      await downloads.prepareForAppUpdate();
++      expect(transfer.token.isCancelled, isTrue);
++      expect(transfer.finished.isCompleted, isTrue);
++      expect(stagingGone(), isTrue);
++      expect(db.rows['Mario']!.status, DownloadStatus.paused);
++      expect(db.rows['Mario']!.link.remoteZip, isNull);
++      expect(db.rows['Mario']!.link.isTorrent, isTrue);
++      expect(File(p.join(temp.path, 'Mario.zip')).existsSync(), isFalse);
++      expect(torrents.pauseCalls, 0);
++      expect(torrents.cancelCalls, 0);
++      final resumed = remote.plan();
++      await downloads.resumeAfterAppUpdatePreparation();
++      await resumed.started.future;
++      expect(debrid.calls['Mario.zip'], 2);
++      expect(resumed.target.url, isNot(transfer.target.url));
++      resumed.release.complete();
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.completed);
++      expect(File(p.join(temp.path, 'Mario.zip')).readAsBytesSync(), _member);
++    },
++  );
++
++  test(
++    'expired container links have bounded re-resolution and no persisted signed URL',
++    () async {
++      for (var i = 0; i < 3; i++) {
++        final request = RequestOptions(path: _signedUrl);
++        remote.plan(
++          releaseImmediately: true,
++          failure: DioException(
++            requestOptions: request,
++            response: Response<void>(requestOptions: request, statusCode: 403),
++            type: DioExceptionType.badResponse,
++            message: 'Forbidden $_signedUrl',
++          ),
++        );
++      }
++      db.rows['Mario'] = _task('Mario');
++      downloads.setMaxConcurrentDownloads(1);
++      await _until(() => db.rows['Mario']!.status == DownloadStatus.failed);
++      expect(debrid.calls['Mario.zip'], 3);
++      expect(remote.calls, hasLength(3));
++      expect(db.rows['Mario']!.error, contains('ARCHIVE_LINK_EXPIRED'));
++      expect(jsonEncode(db.writes), isNot(contains('private-url')));
++      expect(transport.calls, isEmpty);
++    },
++  );
++
++  test('restart of a paused task resolves the original member again', () async {
++    final first = remote.plan();
++    db.rows['Mario'] = _task('Mario');
++    downloads.setMaxConcurrentDownloads(1);
++    await first.started.future.timeout(const Duration(seconds: 3));
++    await downloads.pauseDownload('Mario');
++    await _until(() => db.rows['Mario']!.status == DownloadStatus.paused);
++    await _until(stagingGone);
++    final saved = db.rows['Mario']!.toMap();
++    downloads.dispose();
++    db.rows['Mario'] = DownloadTask.fromMap(saved);
++    final emptyQueueGate = Completer<void>();
++    final emptyQueueStarted = Completer<void>();
++    db.emptyPendingQueryGate = emptyQueueGate;
++    db.emptyPendingQueryStarted = emptyQueueStarted;
++    addTearDown(() {
++      if (!emptyQueueGate.isCompleted) emptyQueueGate.complete();
++    });
++    downloads = createDownloads();
++    await downloads.initialize().timeout(const Duration(seconds: 3));
++    await emptyQueueStarted.future.timeout(const Duration(seconds: 3));
++    expect(debrid.calls['Mario.zip'], 1);
++    final second = remote.plan();
++    await downloads.resumeDownload('Mario').timeout(const Duration(seconds: 3));
++    expect(db.rows['Mario']!.status, DownloadStatus.pending);
++    expect(second.started.isCompleted, isFalse);
++    emptyQueueGate.complete();
++    await second.started.future.timeout(
++      const Duration(seconds: 3),
++      onTimeout: () => fail(
++        'Fresh transfer did not start: status ${db.rows['Mario']?.status}, '
++        'resolver calls ${debrid.calls['Mario.zip']}',
++      ),
++    );
++    expect(debrid.calls['Mario.zip'], 2);
++    expect(
++      second.target.selectionProof.filePath,
++      first.target.selectionProof.filePath,
++    );
++    second.release.complete();
++    await _until(() => db.rows['Mario']!.status == DownloadStatus.completed);
++    expect(File(p.join(temp.path, 'Mario.zip')).readAsBytesSync(), _member);
++  });
++}
 diff --git a/test/debrid/torbox_catalog_proof_test.dart b/test/debrid/torbox_catalog_proof_test.dart
 new file mode 100644
 --- /dev/null
@@ -8228,6 +10734,223 @@ new file mode 100644
 +      expect(adapter.calls.last.uri.path, endsWith('/requestdl'));
 +    },
 +  );
++}
+diff --git a/test/debrid/torbox_collection_zip_test.dart b/test/debrid/torbox_collection_zip_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/debrid/torbox_collection_zip_test.dart
+@@ -0,0 +1,212 @@
++import 'dart:convert';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:romgi/models/debrid_failure_details.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++import 'package:romgi/services/debrid/debrid_provider.dart';
++import 'package:romgi/services/debrid/torbox_provider.dart';
++
++import 'debrid_test_utils.dart';
++
++const _hash = '0123456789abcdef0123456789abcdef01234567';
++const _path =
++    'No-Intro/Nintendo - Super Nintendo Entertainment System/Super Mario World (USA).zip';
++const _size = 345695;
++const _containerSize = 4208534228;
++
++TorrentFileSelectionProof _proof({String path = _path}) =>
++    TorrentFileSelectionProof.tryCreate(
++      infohash: _hash,
++      fileIndex: 1,
++      filePath: path,
++      expectedSize: _size,
++      members: [
++        const TorrentFileIdentity(index: 0, path: 'Other A.zip', size: 100),
++        TorrentFileIdentity(index: 1, path: path, size: _size),
++        const TorrentFileIdentity(index: 2, path: 'Other B.zip', size: 200),
++      ],
++    )!;
++
++Map<String, Object?> _container() => {
++  'id': 71,
++  'name': 'private/provider/Minerva_Myrient.zip',
++  'short_name': 'Minerva_Myrient.zip',
++  'size': _containerSize,
++  'zipped': true,
++};
++
++Future<(DebridResult, StubAdapter)> _resolve({
++  List<Object?>? files,
++  bool withProof = true,
++  TorrentFileSelectionProof? proof,
++  String returnedHash = _hash,
++  bool finished = true,
++  bool failLink = false,
++}) async {
++  final req = DebridFileRequest(
++    infohash: _hash,
++    magnet: 'magnet:?xt=urn:btih:$_hash',
++    fileIndex: 1,
++    filePath: _path,
++    expectedSize: _size,
++    selectionProof: withProof ? (proof ?? _proof()) : null,
++  );
++  final dio = stubbedDio('https://api.torbox.app/v1/api', {
++    '/v1/api/torrents/createtorrent': (_) => jsonBody(
++      jsonEncode({
++        'success': true,
++        'data': {'torrent_id': 42, 'hash': _hash},
++      }),
++    ),
++    '/v1/api/torrents/mylist': (_) => jsonBody(
++      jsonEncode({
++        'success': true,
++        'data': {
++          'id': 42,
++          'hash': returnedHash,
++          'size': _containerSize,
++          'download_present': true,
++          'download_finished': finished,
++          'download_state': 'cached',
++          'files': files ?? [_container()],
++        },
++      }),
++    ),
++    '/v1/api/torrents/requestdl': (_) => failLink
++        ? jsonBody('{"success":false,"error":"FILE_NOT_FOUND"}')
++        : jsonBody(
++            '{"success":true,"data":"https://download.example/collection.zip?token=fixture-key"}',
++          ),
++  });
++  final result = await TorboxProvider(
++    dio: dio,
++  ).resolveFile(req, apiKey: 'fixture-key');
++  return (result, dio.httpClientAdapter as StubAdapter);
++}
++
++void _noLink(DebridResult result, StubAdapter adapter) {
++  expect(result, isA<DebridError>());
++  expect(
++    adapter.calls.where((c) => c.uri.path.endsWith('/requestdl')),
++    isEmpty,
++  );
++}
++
++void main() {
++  test(
++    'reported cached collection becomes a selected-member transport',
++    () async {
++      final (result, adapter) = await _resolve();
++      expect(result, isA<DebridReady>());
++      final ready = result as DebridReady;
++      expect(ready.size, _size);
++      expect(ready.filename, _path);
++      expect(ready.remoteZip!.archiveSize, _containerSize);
++      expect(ready.remoteZip!.selectionProof.filePath, _path.toLowerCase());
++      expect(ready.remoteZip!.selectionProof.expectedSize, _size);
++      expect(
++        ready.remoteZip!.diagnostics!.stage,
++        DebridFailureStage.archiveMember,
++      );
++      expect(ready.remoteZip!.diagnostics!.providerFileCount, 1);
++      expect(
++        ready.remoteZip!.diagnostics!.checks[DebridDiagnosticCheck
++            .collectionFileCountMatches],
++        isFalse,
++      );
++      final request = adapter.calls.last.uri.queryParameters;
++      expect(request['torrent_id'], '42');
++      expect(request['file_id'], '71');
++      expect(request['zip_link'], 'false');
++    },
++  );
++
++  test('archive fallback requires complete catalog selection proof', () async {
++    final (result, adapter) = await _resolve(withProof: false);
++    _noLink(result, adapter);
++  });
++
++  test('archive proof cannot describe another selected path', () async {
++    final (result, adapter) = await _resolve(
++      proof: _proof(path: 'Another.zip'),
++    );
++    _noLink(result, adapter);
++  });
++
++  for (final flag in [null, false, 'true']) {
++    test(
++      'only the boolean zipped flag enables archive handling: $flag',
++      () async {
++        final file = _container()..['zipped'] = flag;
++        final (result, adapter) = await _resolve(files: [file]);
++        _noLink(result, adapter);
++      },
++    );
++  }
++
++  for (final id in [null, -1, 1e20]) {
++    test('an invalid archive file ID is rejected: $id', () async {
++      final file = _container()..['id'] = id;
++      final (result, adapter) = await _resolve(files: [file]);
++      _noLink(result, adapter);
++    });
++  }
++
++  for (final size in [null, 0, 21, 1e20]) {
++    test('an invalid container size is rejected: $size', () async {
++      final file = _container()..['size'] = size;
++      final (result, adapter) = await _resolve(files: [file]);
++      _noLink(result, adapter);
++    });
++  }
++
++  test('multiple ZIP candidates are not silently reduced to one', () async {
++    final (result, adapter) = await _resolve(
++      files: [_container(), _container()..['id'] = 72],
++    );
++    _noLink(result, adapter);
++  });
++
++  test(
++    'a different torrent identity is rejected before the ZIP link request',
++    () async {
++      final (result, adapter) = await _resolve(
++        returnedHash: 'ffffffffffffffffffffffffffffffffffffffff',
++      );
++      _noLink(result, adapter);
++      expect((result as DebridError).code, 'TORRENT_IDENTITY_MISMATCH');
++    },
++  );
++
++  test('an unfinished collection still reports preparation', () async {
++    final (result, adapter) = await _resolve(finished: false);
++    expect(result, isA<DebridCaching>());
++    expect(
++      adapter.calls.where((c) => c.uri.path.endsWith('/requestdl')),
++      isEmpty,
++    );
++  });
++
++  test(
++    'link errors retain their actual stage and container evidence',
++    () async {
++      final (result, _) = await _resolve(failLink: true);
++      expect(result, isA<DebridError>());
++      final error = result as DebridError;
++      expect(error.code, 'FILE_NOT_FOUND');
++      expect(error.diagnostics!.stage, DebridFailureStage.downloadLink);
++      expect(error.diagnostics!.zippedFileCount, 1);
++    },
++  );
++
++  test('an ordinary exact game file keeps the existing direct route', () async {
++    final (result, _) = await _resolve(
++      files: [
++        {'id': 19, 'name': _path, 'size': _size, 'zipped': false},
++      ],
++    );
++    expect(result, isA<DebridReady>());
++    expect((result as DebridReady).remoteZip, isNull);
++    expect(result.size, _size);
++  });
 +}
 diff --git a/test/debrid/torbox_file_metadata_test.dart b/test/debrid/torbox_file_metadata_test.dart
 new file mode 100644
@@ -9465,6 +12188,1339 @@ diff --git a/test/downloads_screen_actions_test.dart b/test/downloads_screen_act
      await tester.pumpAndSettle();
      expect(service.calls, ['retry']);
      expect(
+diff --git a/test/remote_zip_service_test.dart b/test/remote_zip_service_test.dart
+new file mode 100644
+--- /dev/null
++++ b/test/remote_zip_service_test.dart
+@@ -0,0 +1,1328 @@
++import 'dart:async';
++import 'dart:convert';
++import 'dart:io';
++import 'dart:math' as math;
++import 'dart:typed_data';
++
++import 'package:dio/dio.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:romgi/models/remote_zip_target.dart';
++import 'package:romgi/models/torrent_file_selection_proof.dart';
++import 'package:romgi/services/remote_zip_service.dart';
++
++// All archives and payloads in this file are synthetic. The server exposes only
++// loopback ranges, including virtual offsets beyond 4 GiB without allocating a
++// large archive or downloading any catalog/game data.
++const _hash = '0123456789abcdef0123456789abcdef01234567';
++final _game = Uint8List.fromList(List<int>.generate(12000, (i) => i % 251));
++
++class _Entry {
++  _Entry(
++    this.name,
++    this.bytes, {
++    this.method = 0,
++    this.flags = 0x800,
++    this.descriptor = false,
++    this.signedDescriptor = true,
++    this.crcOverride,
++    this.sizeOverride,
++    this.compressedOverride,
++    this.localName,
++    this.localMethod,
++    this.localSize,
++    this.localFlags,
++    this.creator = 3,
++    this.attributes = 0,
++    this.rawName,
++    this.extra = const [],
++    this.localExtra,
++  });
++
++  final String name;
++  final List<int> bytes;
++  final int method;
++  final int flags;
++  final bool descriptor;
++  final bool signedDescriptor;
++  final int? crcOverride;
++  final int? sizeOverride;
++  final List<int>? compressedOverride;
++  final String? localName;
++  final int? localMethod;
++  final int? localSize;
++  final int? localFlags;
++  final int creator;
++  final int attributes;
++  final List<int>? rawName;
++  final List<int> extra;
++  final List<int>? localExtra;
++}
++
++class _LeBytes {
++  final bytes = BytesBuilder(copy: false);
++  void u16(int value) {
++    final d = ByteData(2)..setUint16(0, value, Endian.little);
++    bytes.add(d.buffer.asUint8List());
++  }
++
++  void u32(int value) {
++    final d = ByteData(4)..setUint32(0, value, Endian.little);
++    bytes.add(d.buffer.asUint8List());
++  }
++
++  void u64(int value) {
++    final d = ByteData(8)..setUint64(0, value, Endian.little);
++    bytes.add(d.buffer.asUint8List());
++  }
++
++  void add(List<int> value) => bytes.add(value);
++  Uint8List take() => bytes.takeBytes();
++}
++
++// Deliberately independent, bit-at-a-time fixture CRC. The standard check value
++// for ASCII '123456789' is also asserted below.
++int _crc(List<int> bytes) {
++  var crc = 0xffffffff;
++  for (final byte in bytes) {
++    crc ^= byte;
++    for (var bit = 0; bit < 8; bit++) {
++      crc = crc & 1 == 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
++    }
++  }
++  return (crc ^ 0xffffffff) & 0xffffffff;
++}
++
++class _Segment {
++  _Segment(this.offset, this.bytes);
++  final int offset;
++  final Uint8List bytes;
++}
++
++class _Zip {
++  _Zip(
++    this.entries, {
++    bool zip64 = false,
++    int localBase = 0,
++    int gap = 70000,
++    int? exactLength,
++    List<int> comment = const [],
++  }) {
++    var cursor = localBase;
++    final central = _LeBytes();
++    for (final entry in entries) {
++      final name = entry.rawName ?? utf8.encode(entry.name);
++      final localName = entry.localName == null
++          ? name
++          : utf8.encode(entry.localName!);
++      final compressed =
++          entry.compressedOverride ??
++          (entry.method == 8
++              ? ZLibEncoder(raw: true).convert(entry.bytes)
++              : entry.bytes);
++      final size = entry.sizeOverride ?? entry.bytes.length;
++      final crc = entry.crcOverride ?? _crc(entry.bytes);
++      final flags = entry.flags | (entry.descriptor ? 8 : 0);
++      final localFlags = entry.localFlags ?? flags;
++      final needed = zip64 ? 45 : 20;
++      final localZip64 = _LeBytes();
++      final centralZip64 = _LeBytes();
++      if (zip64) {
++        localZip64.u16(1);
++        localZip64.u16(16);
++        localZip64.u64(entry.localSize ?? size);
++        localZip64.u64(compressed.length);
++        centralZip64.u16(1);
++        centralZip64.u16(24);
++        centralZip64.u64(size);
++        centralZip64.u64(compressed.length);
++        centralZip64.u64(cursor);
++      }
++      final localExtra = [
++        ...localZip64.take(),
++        ...entry.localExtra ?? entry.extra,
++      ];
++      final centralExtra = [...centralZip64.take(), ...entry.extra];
++      final local = _LeBytes();
++      local.u32(0x04034b50);
++      local.u16(needed);
++      local.u16(localFlags);
++      local.u16(entry.localMethod ?? entry.method);
++      local.u16(0);
++      local.u16(0);
++      local.u32(entry.descriptor ? 0 : crc);
++      local.u32(
++        zip64
++            ? 0xffffffff
++            : entry.descriptor
++            ? 0
++            : compressed.length,
++      );
++      local.u32(
++        zip64
++            ? 0xffffffff
++            : entry.descriptor
++            ? 0
++            : entry.localSize ?? size,
++      );
++      local.u16(localName.length);
++      local.u16(localExtra.length);
++      local.add(localName);
++      local.add(localExtra);
++      final localBytes = local.take();
++      localOffsets.add(cursor);
++      dataOffsets.add(cursor + localBytes.length);
++      compressedSizes.add(compressed.length);
++      segments.add(_Segment(cursor, localBytes));
++      segments.add(
++        _Segment(cursor + localBytes.length, Uint8List.fromList(compressed)),
++      );
++
++      central.u32(0x02014b50);
++      central.u16((entry.creator << 8) | needed);
++      central.u16(needed);
++      central.u16(flags);
++      central.u16(entry.method);
++      central.u16(0);
++      central.u16(0);
++      central.u32(crc);
++      central.u32(zip64 ? 0xffffffff : compressed.length);
++      central.u32(zip64 ? 0xffffffff : size);
++      central.u16(name.length);
++      central.u16(centralExtra.length);
++      central.u16(0);
++      central.u16(0);
++      central.u16(0);
++      central.u32(entry.attributes);
++      central.u32(zip64 ? 0xffffffff : cursor);
++      central.add(name);
++      central.add(centralExtra);
++      cursor += localBytes.length + compressed.length;
++      if (entry.descriptor) {
++        final descriptor = _LeBytes();
++        if (entry.signedDescriptor) descriptor.u32(0x08074b50);
++        descriptor.u32(crc);
++        if (zip64) {
++          descriptor.u64(compressed.length);
++          descriptor.u64(size);
++        } else {
++          descriptor.u32(compressed.length);
++          descriptor.u32(size);
++        }
++        final bytes = descriptor.take();
++        segments.add(_Segment(cursor, bytes));
++        cursor += bytes.length;
++      }
++    }
++    final centralBytes = central.take();
++    final endLength = 22 + comment.length + (zip64 ? 76 : 0);
++    directoryOffset = exactLength == null
++        ? cursor + gap
++        : exactLength - endLength - centralBytes.length;
++    if (directoryOffset < cursor) {
++      throw StateError('Invalid synthetic ZIP layout');
++    }
++    directorySize = centralBytes.length;
++    segments.add(_Segment(directoryOffset, centralBytes));
++    cursor = directoryOffset + centralBytes.length;
++    final end = _LeBytes();
++    if (zip64) {
++      end.u32(0x06064b50);
++      end.u64(44);
++      end.u16(45);
++      end.u16(45);
++      end.u32(0);
++      end.u32(0);
++      end.u64(entries.length);
++      end.u64(entries.length);
++      end.u64(centralBytes.length);
++      end.u64(directoryOffset);
++      end.u32(0x07064b50);
++      end.u32(0);
++      end.u64(cursor);
++      end.u32(1);
++    }
++    end.u32(0x06054b50);
++    end.u16(0);
++    end.u16(0);
++    end.u16(zip64 ? 0xffff : entries.length);
++    end.u16(zip64 ? 0xffff : entries.length);
++    end.u32(zip64 ? 0xffffffff : centralBytes.length);
++    end.u32(zip64 ? 0xffffffff : directoryOffset);
++    end.u16(comment.length);
++    end.add(comment);
++    final endBytes = end.take();
++    segments.add(_Segment(cursor, endBytes));
++    length = cursor + endBytes.length;
++  }
++
++  final List<_Entry> entries;
++  final segments = <_Segment>[];
++  final localOffsets = <int>[];
++  final dataOffsets = <int>[];
++  final compressedSizes = <int>[];
++  late final int directoryOffset;
++  late final int directorySize;
++  late final int length;
++
++  Uint8List range(int start, int end) {
++    final bytes = Uint8List(end - start + 1);
++    for (final segment in segments) {
++      final from = math.max(start, segment.offset);
++      final to = math.min(end + 1, segment.offset + segment.bytes.length);
++      if (from < to) {
++        bytes.setRange(
++          from - start,
++          to - start,
++          segment.bytes,
++          from - segment.offset,
++        );
++      }
++    }
++    return bytes;
++  }
++
++  void patch32(int offset, int value) {
++    final bytes = ByteData(4)..setUint32(0, value, Endian.little);
++    segments.add(_Segment(offset, bytes.buffer.asUint8List()));
++  }
++
++  void patch16(int offset, int value) {
++    final bytes = ByteData(2)..setUint16(0, value, Endian.little);
++    segments.add(_Segment(offset, bytes.buffer.asUint8List()));
++  }
++}
++
++typedef _Handler =
++    Future<bool> Function(HttpRequest request, int start, int end);
++
++class _Harness {
++  _Harness(this.zip, this.folder, this.server, this.dio);
++  final _Zip zip;
++  final Directory folder;
++  final HttpServer server;
++  final Dio dio;
++  final requests = <(int, int)>[];
++  final seenIfMatch = <String?>[];
++  final seenIdentity = <String?>[];
++  final seenCredentials = <String?>[];
++  String? etag = '"synthetic-v1"';
++  String? lastModified;
++  _Handler? handler;
++  int bytesSent = 0;
++  File get destination => File(p.join(folder.path, 'selected.zip'));
++  String get url => 'http://127.0.0.1:${server.port}/archive';
++
++  static Future<_Harness> start(_Zip zip) async {
++    final folder = await Directory.systemTemp.createTemp('nomrom-remote-zip-');
++    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
++    final dio = Dio();
++    final result = _Harness(zip, folder, server, dio);
++    server.listen((request) async {
++      try {
++        final range = RegExp(
++          r'^bytes=(\d+)-(\d+)$',
++        ).firstMatch(request.headers.value('range') ?? '');
++        if (range == null) {
++          request.response.statusCode = 400;
++          await request.response.close();
++          return;
++        }
++        final start = int.parse(range[1]!);
++        final end = int.parse(range[2]!);
++        result.requests.add((start, end));
++        result.seenIfMatch.add(request.headers.value('if-match'));
++        result.seenIdentity.add(request.headers.value('accept-encoding'));
++        result.seenCredentials.add(request.headers.value('authorization'));
++        result.seenCredentials.add(request.headers.value('cookie'));
++        if (result.handler != null &&
++            await result.handler!(request, start, end)) {
++          return;
++        }
++        request.response.statusCode = 206;
++        request.response.headers.set(
++          'Content-Range',
++          'bytes $start-$end/${zip.length}',
++        );
++        request.response.headers.contentLength = end - start + 1;
++        if (result.etag != null) {
++          request.response.headers.set('ETag', result.etag!);
++        }
++        if (result.lastModified != null) {
++          request.response.headers.set('Last-Modified', result.lastModified!);
++        }
++        final bytes = zip.range(start, end);
++        request.response.add(bytes);
++        result.bytesSent += bytes.length;
++        await request.response.close();
++      } on HttpException {
++        // Client may reject a response before reading its body.
++      } on SocketException {
++        // Explicit cancellation closes the task's range connection.
++      }
++    });
++    addTearDown(() async {
++      dio.close(force: true);
++      await server.close(force: true);
++      await folder.delete(recursive: true);
++    });
++    return result;
++  }
++
++  TorrentFileSelectionProof proof({
++    String? selectedPath,
++    int? expectedSize,
++    List<TorrentFileIdentity>? members,
++  }) => TorrentFileSelectionProof.tryCreate(
++    infohash: _hash,
++    fileIndex: 0,
++    filePath: selectedPath ?? zip.entries.first.name,
++    expectedSize: expectedSize ?? zip.entries.first.bytes.length,
++    members:
++        members ??
++        [
++          for (var i = 0; i < zip.entries.length; i++)
++            if (!zip.entries[i].name.endsWith('/'))
++              TorrentFileIdentity(
++                index: i,
++                path: i == 0
++                    ? selectedPath ?? zip.entries[i].name
++                    : zip.entries[i].name,
++                size: i == 0
++                    ? expectedSize ?? zip.entries[i].bytes.length
++                    : zip.entries[i].bytes.length,
++              ),
++        ],
++  )!;
++
++  Future<void> download({
++    TorrentFileSelectionProof? selection,
++    CancelToken? cancelToken,
++    ProgressCallback? onProgress,
++  }) => RemoteZipService(dio: dio).download(
++    target: RemoteZipTarget(
++      url: url,
++      archiveSize: zip.length,
++      selectionProof: selection ?? proof(),
++    ),
++    destination: destination,
++    cancelToken: cancelToken ?? CancelToken(),
++    onReceiveProgress: onProgress ?? (_, _) {},
++  );
++
++  Future<void> expectPreservedFailure(
++    Object matcher, {
++    TorrentFileSelectionProof? selection,
++    CancelToken? cancelToken,
++  }) async {
++    await destination.writeAsString('existing selected file');
++    await expectLater(
++      download(selection: selection, cancelToken: cancelToken),
++      throwsA(matcher),
++    );
++    expect(await destination.readAsString(), 'existing selected file');
++    expect((await folder.list().toList()).map((f) => p.basename(f.path)), [
++      'selected.zip',
++    ]);
++  }
++}
++
++Matcher _code(String code) =>
++    isA<RemoteZipException>().having((e) => e.code, 'code', code);
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  HttpOverrides.global = null;
++
++  test('fixture CRC matches the standard ZIP CRC-32 vector', () {
++    expect(_crc(ascii.encode('123456789')), 0xcbf43926);
++  });
++
++  for (final method in [0, 8]) {
++    test(
++      'downloads only the selected member using method $method and bounded ranges',
++      () async {
++        final zip = _Zip([
++          _Entry('Collection/Selected/game.zip', _game, method: method),
++          _Entry('Collection/Other/other.zip', [1, 2, 3]),
++        ]);
++        final h = await _Harness.start(zip);
++        final progress = <(int, int)>[];
++        await h.download(
++          onProgress: (received, total) => progress.add((received, total)),
++        );
++        expect(await h.destination.readAsBytes(), _game);
++        expect(h.requests.last, (
++          zip.dataOffsets.first,
++          zip.dataOffsets.first + zip.compressedSizes.first - 1,
++        ));
++        expect(h.requests, isNot(contains((0, zip.length - 1))));
++        expect(h.seenIfMatch.first, isNull);
++        expect(h.seenIfMatch.skip(1), everyElement('"synthetic-v1"'));
++        expect(h.seenIdentity, everyElement('identity'));
++        expect(progress.last, (_game.length, _game.length));
++        expect(
++          progress.every((p) => p.$1 <= p.$2 && p.$2 == _game.length),
++          isTrue,
++        );
++        expect(
++          h.bytesSent,
++          lessThan(65577 + zip.directorySize + _game.length + 200),
++        );
++      },
++    );
++  }
++
++  test(
++    'sparse ZIP64 offsets beyond 4 GiB work without large allocation or transfer',
++    () async {
++      final zip = _Zip(
++        [_Entry('Pack/game.zip', _game, method: 8)],
++        zip64: true,
++        localBase: 0x100000000 + 123,
++      );
++      final h = await _Harness.start(zip);
++      await h.download();
++      expect(zip.length, greaterThan(0x100000000));
++      expect(await h.destination.readAsBytes(), _game);
++      expect(h.requests.any((r) => r.$1 > 0x100000000), isTrue);
++      expect(h.bytesSent, lessThan(70000));
++    },
++  );
++
++  test(
++    'reported 4,208,534,228 byte container yields only the 345,695 byte member',
++    () async {
++      final selected = Uint8List.fromList(
++        List<int>.generate(345695, (i) => i % 251),
++      );
++      final zip = _Zip([
++        _Entry('SNES/Selected.zip', selected, method: 8),
++      ], exactLength: 4208534228);
++      final h = await _Harness.start(zip);
++      await h.download();
++      expect(zip.length, 4208534228);
++      expect(await h.destination.readAsBytes(), selected);
++      expect(h.bytesSent, lessThan(100000));
++    },
++  );
++
++  for (final zip64 in [false, true]) {
++    for (final signed in [false, true]) {
++      test(
++        'verifies ${zip64 ? 'ZIP64' : 'ZIP32'} ${signed ? 'signed' : 'unsigned'} descriptor',
++        () async {
++          final h = await _Harness.start(
++            _Zip([
++              _Entry(
++                'Pack/game.zip',
++                _game,
++                method: 8,
++                descriptor: true,
++                signedDescriptor: signed,
++              ),
++            ], zip64: zip64),
++          );
++          await h.download();
++          expect(await h.destination.readAsBytes(), _game);
++        },
++      );
++    }
++  }
++
++  test(
++    'maximum ZIP comment and embedded unrelated end signature are bounded',
++    () async {
++      final comment = Uint8List(65535);
++      comment.setRange(100, 104, [0x50, 0x4b, 0x05, 0x06]);
++      final h = await _Harness.start(
++        _Zip([_Entry('Pack/game.zip', _game)], comment: comment),
++      );
++      await h.download();
++      expect(await h.destination.readAsBytes(), _game);
++      expect(h.requests.first.$2 - h.requests.first.$1 + 1, 65577);
++    },
++  );
++
++  test(
++    'known collection root prefix is accepted only as a unique full-path suffix',
++    () async {
++      final h = await _Harness.start(
++        _Zip([_Entry('Outer/Pack/game.zip', _game)]),
++      );
++      await h.download(selection: h.proof(selectedPath: 'Pack/game.zip'));
++      expect(await h.destination.readAsBytes(), _game);
++    },
++  );
++
++  test(
++    'flattened filename needs complete catalog count and total proof',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('game.zip', _game),
++          _Entry('other.zip', [8, 9]),
++        ]),
++      );
++      final proof = h.proof(
++        selectedPath: 'Catalog/Selected/game.zip',
++        members: [
++          TorrentFileIdentity(
++            index: 0,
++            path: 'Catalog/Selected/game.zip',
++            size: _game.length,
++          ),
++          const TorrentFileIdentity(
++            index: 1,
++            path: 'Catalog/Other/other.zip',
++            size: 2,
++          ),
++        ],
++      );
++      await h.download(selection: proof);
++      expect(await h.destination.readAsBytes(), _game);
++    },
++  );
++
++  test('basename fallback rejects incomplete collection evidence', () async {
++    final h = await _Harness.start(_Zip([_Entry('game.zip', _game)]));
++    final proof = h.proof(
++      selectedPath: 'Catalog/game.zip',
++      members: [
++        TorrentFileIdentity(
++          index: 0,
++          path: 'Catalog/game.zip',
++          size: _game.length,
++        ),
++        const TorrentFileIdentity(
++          index: 1,
++          path: 'Catalog/missing.zip',
++          size: 2,
++        ),
++      ],
++    );
++    await h.expectPreservedFailure(
++      _code('ZIP_MEMBER_NOT_FOUND'),
++      selection: proof,
++    );
++  });
++
++  test(
++    'basename fallback rejects matching count with wrong aggregate size',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('game.zip', _game),
++          _Entry('other.zip', [8, 9, 10]),
++        ]),
++      );
++      final proof = h.proof(
++        selectedPath: 'Catalog/game.zip',
++        members: [
++          TorrentFileIdentity(
++            index: 0,
++            path: 'Catalog/game.zip',
++            size: _game.length,
++          ),
++          const TorrentFileIdentity(
++            index: 1,
++            path: 'Catalog/other.zip',
++            size: 2,
++          ),
++        ],
++      );
++      await h.expectPreservedFailure(
++        _code('ZIP_MEMBER_NOT_FOUND'),
++        selection: proof,
++      );
++    },
++  );
++
++  test(
++    'ambiguous suffixes and duplicate basename/size never choose first member',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('A/Pack/game.zip', _game),
++          _Entry('B/Pack/game.zip', _game),
++        ]),
++      );
++      final proof = h.proof(
++        selectedPath: 'Pack/game.zip',
++        members: [
++          TorrentFileIdentity(
++            index: 0,
++            path: 'Pack/game.zip',
++            size: _game.length,
++          ),
++          TorrentFileIdentity(
++            index: 1,
++            path: 'Other/game.zip',
++            size: _game.length,
++          ),
++        ],
++      );
++      await h.expectPreservedFailure(
++        _code('ZIP_MEMBER_AMBIGUOUS'),
++        selection: proof,
++      );
++    },
++  );
++
++  test('literal percent and plus names are never URI decoded', () async {
++    final h = await _Harness.start(
++      _Zip([
++        _Entry('Pack/a%20b+c.zip', _game),
++        _Entry('Pack/a b+c.zip', _game),
++      ]),
++    );
++    await h.download();
++    expect(h.requests.last.$1, h.zip.dataOffsets.first);
++    expect(await h.destination.readAsBytes(), _game);
++  });
++
++  test('CP437 filename decoding preserves the actual accented name', () async {
++    final h = await _Harness.start(
++      _Zip([
++        _Entry(
++          'Pack/café.zip',
++          _game,
++          flags: 0,
++          rawName: [...ascii.encode('Pack/caf'), 0x82, ...ascii.encode('.zip')],
++        ),
++      ]),
++    );
++    await h.download();
++    expect(await h.destination.readAsBytes(), _game);
++  });
++
++  test(
++    'CRC-bound Unicode path extra is supported without URL decoding',
++    () async {
++      final raw = ascii.encode('Pack/old.zip');
++      final unicode = _LeBytes();
++      final name = utf8.encode('Pack/日本+%20.zip');
++      unicode.u16(0x7075);
++      unicode.u16(5 + name.length);
++      unicode.add([1]);
++      unicode.u32(_crc(raw));
++      unicode.add(name);
++      final h = await _Harness.start(
++        _Zip([
++          _Entry(
++            'Pack/日本+%20.zip',
++            _game,
++            flags: 0,
++            rawName: raw,
++            extra: unicode.take(),
++            localExtra: const [],
++          ),
++        ]),
++      );
++      await h.download();
++      expect(await h.destination.readAsBytes(), _game);
++    },
++  );
++
++  test(
++    'directory records are excluded from collection count and total',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('game.zip', _game),
++          _Entry('Directory/', [], attributes: 0x10),
++        ]),
++      );
++      final proof = h.proof(
++        selectedPath: 'Catalog/game.zip',
++        members: [
++          TorrentFileIdentity(
++            index: 0,
++            path: 'Catalog/game.zip',
++            size: _game.length,
++          ),
++        ],
++      );
++      await h.download(selection: proof);
++      expect(await h.destination.readAsBytes(), _game);
++    },
++  );
++
++  test(
++    'missing strong validator is allowed only with all size/header/CRC checks',
++    () async {
++      final h = await _Harness.start(
++        _Zip([_Entry('Pack/game.zip', _game, method: 8)]),
++      );
++      h.etag = null;
++      h.lastModified = 'not-an-http-date';
++      await h.download();
++      expect(await h.destination.readAsBytes(), _game);
++      expect(h.seenIfMatch, everyElement(isNull));
++    },
++  );
++
++  test(
++    'shared Dio account headers are not forwarded to a signed ZIP URL',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      h.dio.options.headers['authorization'] = 'Bearer SYNTHETIC-NOT-A-SECRET';
++      h.dio.options.headers['cookie'] = 'synthetic=true';
++      await h.download();
++      expect(h.seenCredentials, everyElement(isNull));
++    },
++  );
++
++  test(
++    'ignored Range 200 is cancelled without draining its unbounded body',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      final finished = Completer<void>();
++      var sent = 0;
++      var peerClosed = false;
++      h.handler = (request, start, end) async {
++        // HttpServerResponse can discard add/flush calls after the peer leaves.
++        // Observe the actual socket's EOF instead of counting those calls as
++        // network traffic, and keep the body open until the client stops it.
++        final socket = await request.response.detachSocket(writeHeaders: false);
++        socket.listen(
++          (_) {},
++          onDone: () => peerClosed = true,
++          onError: (Object _) => peerClosed = true,
++        );
++        try {
++          socket.write(
++            'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n'
++            'Connection: close\r\n\r\n',
++          );
++          await socket.flush();
++          for (var i = 0; i < 100 && !peerClosed; i++) {
++            socket.write('1000\r\n');
++            socket.add(Uint8List(4096));
++            socket.write('\r\n');
++            sent += 4096;
++            await socket.flush();
++            await Future<void>.delayed(const Duration(milliseconds: 5));
++          }
++          if (!peerClosed) {
++            socket.write('0\r\n\r\n');
++            await socket.flush();
++            await Future<void>.delayed(const Duration(milliseconds: 25));
++          }
++        } on SocketException {
++          // A peer reset is also an observable upstream connection abort.
++          peerClosed = true;
++        } finally {
++          socket.destroy();
++          finished.complete();
++        }
++        return true;
++      };
++      final taskToken = CancelToken();
++      await h.expectPreservedFailure(
++        _code('ZIP_RANGE_UNSUPPORTED'),
++        cancelToken: taskToken,
++      );
++      expect(taskToken.isCancelled, isFalse);
++      await finished.future;
++      expect(h.requests.length, 1);
++      expect(peerClosed, isTrue);
++      expect(sent, lessThan(409600));
++    },
++  );
++
++  for (final mode in ['range', 'total', 'length', 'encoding', 'multipart']) {
++    test(
++      'rejects inconsistent HTTP $mode before consuming member bytes',
++      () async {
++        final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++        h.handler = (request, start, end) async {
++          request.response.statusCode = 206;
++          request.response.headers.set(
++            'Content-Range',
++            mode == 'range'
++                ? 'bytes ${start + 1}-$end/${h.zip.length}'
++                : 'bytes $start-$end/${h.zip.length + (mode == 'total' ? 1 : 0)}',
++          );
++          if (mode == 'length') request.response.headers.contentLength = 1;
++          if (mode == 'encoding') {
++            request.response.headers.set('Content-Encoding', 'gzip');
++          }
++          if (mode == 'multipart') {
++            request.response.headers.set(
++              'Content-Type',
++              'multipart/byteranges; boundary=x',
++            );
++          }
++          request.response.add([0]);
++          await request.response.close();
++          return true;
++        };
++        await h.expectPreservedFailure(_code('ZIP_RANGE_INVALID'));
++        expect(h.requests.length, 1);
++      },
++    );
++  }
++
++  for (final delta in [-1, 1]) {
++    test(
++      'rejects ${delta < 0 ? 'short' : 'long'} streamed range without Content-Length',
++      () async {
++        final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++        h.handler = (request, start, end) async {
++          request.response.statusCode = 206;
++          request.response.headers.set(
++            'Content-Range',
++            'bytes $start-$end/${h.zip.length}',
++          );
++          request.response.headers.chunkedTransferEncoding = true;
++          request.response.add(Uint8List(end - start + 1 + delta));
++          await request.response.close();
++          return true;
++        };
++        await h.expectPreservedFailure(_code('ZIP_RANGE_INVALID'));
++      },
++    );
++  }
++
++  test(
++    'changed ETag rejects the next range without altering the destination',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      h.handler = (request, start, end) async {
++        if (h.requests.length > 1) h.etag = '"synthetic-v2"';
++        return false;
++      };
++      await h.expectPreservedFailure(_code('ZIP_CHANGED'));
++      expect(h.requests.length, 2);
++    },
++  );
++
++  test('a pinned strong ETag must not disappear on a later range', () async {
++    final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++    h.handler = (request, start, end) async {
++      if (h.requests.length > 1) h.etag = null;
++      return false;
++    };
++    await h.expectPreservedFailure(_code('ZIP_CHANGED'));
++    expect(h.requests.length, 2);
++  });
++
++  test(
++    'changed Last-Modified also rejects a range without a strong ETag',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      h.etag = null;
++      h.lastModified = 'Tue, 03 Nov 2026 12:00:00 GMT';
++      h.handler = (request, start, end) async {
++        if (h.requests.length > 1) {
++          expect(
++            request.headers.value('if-unmodified-since'),
++            'Tue, 03 Nov 2026 12:00:00 GMT',
++          );
++          h.lastModified = 'Tue, 03 Nov 2026 12:00:01 GMT';
++        }
++        return false;
++      };
++      await h.expectPreservedFailure(_code('ZIP_CHANGED'));
++    },
++  );
++
++  for (final status in [403, 416]) {
++    test(
++      'HTTP $status remains a DioException for bounded relink handling',
++      () async {
++        final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++        h.handler = (request, start, end) async {
++          request.response.statusCode = status;
++          await request.response.close();
++          return true;
++        };
++        await h.expectPreservedFailure(
++          isA<DioException>().having(
++            (e) => e.response?.statusCode,
++            'status',
++            status,
++          ),
++        );
++      },
++    );
++  }
++
++  test('If-Match 412 becomes a safe archive-changed failure', () async {
++    final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++    h.handler = (request, start, end) async {
++      request.response.statusCode = 412;
++      await request.response.close();
++      return true;
++    };
++    await h.expectPreservedFailure(_code('ZIP_CHANGED'));
++  });
++
++  test(
++    'redirects retain exact Range, identity encoding, and no account headers',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      h.handler = (request, start, end) async {
++        if (request.uri.path == '/archive') {
++          request.response.statusCode = 302;
++          request.response.headers.set('Location', '/actual');
++          await request.response.close();
++          return true;
++        }
++        return false;
++      };
++      await h.download();
++      expect(h.requests[0], h.requests[1]);
++      expect(await h.destination.readAsBytes(), _game);
++    },
++  );
++
++  for (final kind in ['path', 'method', 'size', 'flags']) {
++    test('rejects local/directory $kind mismatch', () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry(
++            'Pack/game.zip',
++            _game,
++            localName: kind == 'path' ? 'Pack/else.zip' : null,
++            localMethod: kind == 'method' ? 8 : null,
++            localSize: kind == 'size' ? _game.length + 1 : null,
++            localFlags: kind == 'flags' ? 0 : null,
++          ),
++        ]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    });
++  }
++
++  for (final name in [
++    '../game.zip',
++    '/game.zip',
++    'C:/game.zip',
++    'Pack/a:stream.zip',
++    'Pack/NUL.zip',
++    'Pack/game.zip ',
++    'Pack/../game.zip',
++  ]) {
++    test('rejects unsafe ZIP path $name without extracting anything', () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('Pack/game.zip', _game),
++          _Entry(name, [1]),
++        ]),
++      );
++      // Use an independently valid catalog proof; archive metadata is untrusted.
++      final proof = h.proof(
++        members: [
++          TorrentFileIdentity(
++            index: 0,
++            path: 'Pack/game.zip',
++            size: _game.length,
++          ),
++        ],
++      );
++      await h.expectPreservedFailure(
++        _code('ZIP_UNSAFE_PATH'),
++        selection: proof,
++      );
++    });
++  }
++
++  test(
++    'case-folded duplicate paths are rejected before choosing a file',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry('Pack/game.zip', _game),
++          _Entry('PACK/GAME.ZIP', [1]),
++        ]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_MEMBER_AMBIGUOUS'));
++    },
++  );
++
++  test('encrypted members are rejected without a password prompt', () async {
++    final h = await _Harness.start(
++      _Zip([_Entry('Pack/game.zip', _game, flags: 0x801)]),
++    );
++    await h.expectPreservedFailure(_code('ZIP_UNSUPPORTED'));
++  });
++
++  test(
++    'Unix symlinks are rejected even when their name and size match',
++    () async {
++      final h = await _Harness.start(
++        _Zip([_Entry('Pack/game.zip', _game, attributes: 0xa1ff << 16)]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_UNSUPPORTED'));
++    },
++  );
++
++  test('unsupported compression is a safe explicit failure', () async {
++    final h = await _Harness.start(
++      _Zip([_Entry('Pack/game.zip', _game, method: 12)]),
++    );
++    await h.expectPreservedFailure(_code('ZIP_UNSUPPORTED'));
++  });
++
++  test(
++    'CRC mismatch preserves the original destination and removes staging',
++    () async {
++      final h = await _Harness.start(
++        _Zip([_Entry('Pack/game.zip', _game, crcOverride: 1)]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_CRC_MISMATCH'));
++    },
++  );
++
++  test('expanded output cannot exceed the catalog byte count', () async {
++    final h = await _Harness.start(
++      _Zip([
++        _Entry(
++          'Pack/game.zip',
++          _game,
++          method: 8,
++          sizeOverride: _game.length - 1,
++        ),
++      ]),
++    );
++    final proof = h.proof(expectedSize: _game.length - 1);
++    await h.expectPreservedFailure(_code('ZIP_MEMBER_SIZE'), selection: proof);
++  });
++
++  test('truncated decompressed output is rejected', () async {
++    final h = await _Harness.start(
++      _Zip([
++        _Entry(
++          'Pack/game.zip',
++          _game,
++          method: 8,
++          compressedOverride: ZLibEncoder(
++            raw: true,
++          ).convert(_game.sublist(0, 100)),
++        ),
++      ]),
++    );
++    await h.expectPreservedFailure(_code('ZIP_MEMBER_SIZE'));
++  });
++
++  test(
++    'invalid Deflate returns a safe error without raw provider information',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry(
++            'Pack/game.zip',
++            _game,
++            method: 8,
++            compressedOverride: [0xff, 0xff, 0xff],
++          ),
++        ]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_DEFLATE_INVALID'));
++    },
++  );
++
++  test(
++    'excessive compressed input is rejected before payload transfer',
++    () async {
++      final h = await _Harness.start(
++        _Zip([
++          _Entry(
++            'Pack/game.zip',
++            [1, 2, 3],
++            method: 8,
++            compressedOverride: Uint8List(70000),
++          ),
++        ]),
++      );
++      await h.expectPreservedFailure(_code('ZIP_MEMBER_SIZE'));
++      expect(
++        h.requests,
++        isNot(
++          contains((
++            h.zip.dataOffsets.first,
++            h.zip.dataOffsets.first + h.zip.compressedSizes.first - 1,
++          )),
++        ),
++      );
++    },
++  );
++
++  test(
++    'entry count and directory byte limits fail before fetching the directory',
++    () async {
++      final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
++      // ZIP64 directory size field, before locator + ordinary EOCD.
++      zip.patch32(zip.length - 98 + 40, 16 * 1024 * 1024 + 1);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_DIRECTORY_LIMIT'));
++      expect(h.requests.length, 2);
++    },
++  );
++
++  test('directory record count disagreement is rejected', () async {
++    final zip = _Zip([_Entry('Pack/game.zip', _game)]);
++    zip.patch16(zip.length - 22 + 8, 2);
++    zip.patch16(zip.length - 22 + 10, 2);
++    final h = await _Harness.start(zip);
++    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++  });
++
++  test('split ZIP metadata is rejected', () async {
++    final zip = _Zip([_Entry('Pack/game.zip', _game)]);
++    zip.patch16(zip.length - 22 + 4, 1);
++    final h = await _Harness.start(zip);
++    await h.expectPreservedFailure(_code('ZIP_UNSUPPORTED'));
++  });
++
++  test(
++    'missing ZIP64 field is rejected without an out-of-bounds exception',
++    () async {
++      final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
++      zip.patch16(
++        zip.directoryOffset + 46 + utf8.encode('Pack/game.zip').length,
++        7,
++      );
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    },
++  );
++
++  test(
++    'member payload overlapping the next local header is rejected',
++    () async {
++      final zip = _Zip([
++        _Entry('Pack/game.zip', _game),
++        _Entry('Pack/other.zip', [1, 2]),
++      ]);
++      zip.patch32(zip.directoryOffset + 20, _game.length + 10);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    },
++  );
++
++  test(
++    'cancellation before metadata makes no request and preserves destination',
++    () async {
++      final h = await _Harness.start(_Zip([_Entry('Pack/game.zip', _game)]));
++      final token = CancelToken()..cancel('synthetic pause');
++      await h.expectPreservedFailure(
++        isA<DioException>().having(
++          (e) => e.type,
++          'type',
++          DioExceptionType.cancel,
++        ),
++        cancelToken: token,
++      );
++      expect(h.requests, isEmpty);
++    },
++  );
++
++  test('cancellation during member output cleans only owned staging', () async {
++    final h = await _Harness.start(
++      _Zip([_Entry('Pack/game.zip', _game, method: 8)]),
++    );
++    await h.destination.writeAsString('existing selected file');
++    final token = CancelToken();
++    await expectLater(
++      h.download(
++        cancelToken: token,
++        onProgress: (n, _) {
++          if (n > 0) token.cancel('synthetic pause');
++        },
++      ),
++      throwsA(
++        isA<DioException>().having(
++          (e) => e.type,
++          'type',
++          DioExceptionType.cancel,
++        ),
++      ),
++    );
++    expect(await h.destination.readAsString(), 'existing selected file');
++    expect((await h.folder.list().toList()).length, 1);
++    // Resume starts a fresh plan and downloads just this member again.
++    await h.download();
++    expect(await h.destination.readAsBytes(), _game);
++  });
++
++  test(
++    'Darwin symlink modes and Windows reparse/volume entries are rejected',
++    () async {
++      for (final entry in [
++        _Entry('Pack/game.zip', _game, creator: 19, attributes: 0xa1ff << 16),
++        _Entry('Pack/game.zip', _game, creator: 0, attributes: 0x400),
++        _Entry('Pack/game.zip', _game, creator: 0, attributes: 0x8),
++      ]) {
++        final h = await _Harness.start(_Zip([entry]));
++        await h.expectPreservedFailure(_code('ZIP_UNSUPPORTED'));
++      }
++    },
++  );
++
++  test('invalid UTF-8 filenames fail with a safe parser error', () async {
++    final h = await _Harness.start(
++      _Zip([
++        _Entry(
++          'Pack/game.zip',
++          _game,
++          rawName: [0xff, ...ascii.encode('.zip')],
++        ),
++      ]),
++    );
++    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++  });
++
++  test(
++    'ZIP64 count limit is checked before allocating entry objects',
++    () async {
++      final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
++      zip.patch32(zip.length - 98 + 24, 100001);
++      zip.patch32(zip.length - 98 + 32, 100001);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_DIRECTORY_LIMIT'));
++      expect(h.requests.length, 2);
++    },
++  );
++
++  test('ZIP64 values outside exact supported integers fail safely', () async {
++    final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
++    zip.patch32(zip.length - 98 + 48 + 4, 0xffffffff);
++    final h = await _Harness.start(zip);
++    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++  });
++
++  test(
++    'incorrect descriptor is rejected before transferring member payload',
++    () async {
++      final zip = _Zip([
++        _Entry('Pack/game.zip', _game, method: 8, descriptor: true),
++      ]);
++      zip.patch32(zip.dataOffsets.first + zip.compressedSizes.first + 4, 1);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      expect(
++        h.requests,
++        isNot(
++          contains((
++            zip.dataOffsets.first,
++            zip.dataOffsets.first + zip.compressedSizes.first - 1,
++          )),
++        ),
++      );
++    },
++  );
++
++  test(
++    'an incomplete end-record comment is rejected rather than scanning the archive',
++    () async {
++      final zip = _Zip([_Entry('Pack/game.zip', _game)]);
++      zip.patch16(zip.length - 2, 1);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      expect(h.requests.length, 1);
++    },
++  );
++}
 diff --git a/test/skraper/rom_identification_dialog_test.dart b/test/skraper/rom_identification_dialog_test.dart
 new file mode 100644
 --- /dev/null

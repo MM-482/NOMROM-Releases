@@ -1,4 +1,4 @@
-name: NOMROM Windows TorBox file selection candidate
+name: NOMROM Windows TorBox collection ZIP candidate
 
 on:
   workflow_dispatch:
@@ -75,8 +75,17 @@ jobs:
               throw 'Flutter archive is missing its expected Windows launcher.'
             }
             # Complete first-run SDK setup before the build reads machine-readable version JSON.
-            & (Join-Path $flutter 'bin/flutter.bat') --version
+            & (Join-Path $flutter 'bin/flutter.bat') --suppress-analytics --version
             if ($LASTEXITCODE -ne 0) { throw 'Flutter SDK initialization failed.' }
+            # Suppress analytics on every nested build-script invocation without
+            # changing the pinned SDK or the application's build helpers.
+            $wrapper = Join-Path $env:RUNNER_TEMP 'nomrom-flutter-ci.cmd'
+            [IO.File]::WriteAllLines($wrapper, @(
+              '@echo off',
+              ('call "' + (Join-Path $flutter 'bin/flutter.bat') + '" --suppress-analytics %*'),
+              'exit /b %errorlevel%'
+            ), [Text.Encoding]::ASCII)
+            "NOMROM_CI_FLUTTER=$wrapper" >> $env:GITHUB_ENV
             "FLUTTER_ROOT=$flutter" >> $env:GITHUB_ENV
             (Join-Path $flutter 'bin') >> $env:GITHUB_PATH
             Write-Host "Official Flutter 3.47.7 archive SHA-256 verified: $sha"
@@ -93,7 +102,7 @@ jobs:
             $privateConfig = Join-Path $env:LOCALAPPDATA 'NOMROM-Publisher/screenscraper-build-private.json'
             if (Test-Path -LiteralPath $privateConfig) { throw 'This candidate must keep ScreenScraper application access pending.' }
             & (Join-Path $env:NOMROM_APP_ROOT 'scripts/build-windows.ps1') `
-              -Flutter (Join-Path $env:FLUTTER_ROOT 'bin/flutter.bat') `
+              -Flutter $env:NOMROM_CI_FLUTTER `
               -UpdateConfigurationFile (Join-Path $env:NOMROM_APP_ROOT 'config/windows-updates-public.json')
             $infoPath = Join-Path $env:NOMROM_APP_ROOT 'build/windows/x64/runner/Release/BUILD-INFO.json'
             $info = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
@@ -152,7 +161,7 @@ jobs:
             Assert-WindowsHost
             Assert-WindowsBuildTools
             Initialize-NomromCompilerEnvironment
-            $flutter = Join-Path $env:FLUTTER_ROOT 'bin/flutter.bat'
+            $flutter = $env:NOMROM_CI_FLUTTER
             $reportPath = Join-Path $env:NOMROM_VERIFY_ROOT 'native-smoke.json'
             if (Test-Path -LiteralPath $reportPath) { throw 'Refusing to reuse an existing native smoke report.' }
             $define = "--dart-define=NOMROM_SMOKE_REPORT=$reportPath"
