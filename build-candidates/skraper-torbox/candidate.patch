@@ -460,6 +460,74 @@ new file mode 100644
 +Windows features and prior Skraper integration remain in this candidate.
 +No replacement publisher public key was supplied. No release or update feed
 +is published by building or packaging this candidate.
+diff --git a/TORBOX-ZIP-COMPATIBILITY.txt b/TORBOX-ZIP-COMPATIBILITY.txt
+new file mode 100644
+--- /dev/null
++++ b/TORBOX-ZIP-COMPATIBILITY.txt
+@@ -0,0 +1,63 @@
++NOMROM 1.10.7+28 — TorBox ZIP compatibility and useful failure details
++
++REPORTED BEHAVIOR
++
++The user's 1.10.6 diagnostics report a finished, cached TorBox torrent in all
++three cases. Super Mario World reached archive-member reading and returned
++ZIP_MEMBER_AMBIGUOUS; Super Mario 64 reached that stage and returned ZIP_INVALID.
++The Zelda 3DS selection returned two usable files, neither marked zipped=true,
++and failed at file selection with no nearby filenames shown.
++
++Those reports identify the failing stages. They do not contain the actual
++archive headers, member lists or the two Zelda filenames, so they do not prove
++which individual format check failed or what the two-file layout represents.
++
++CORRECTIONS
++
++Repeated safe directory records and unrelated duplicate member paths no longer
++make an otherwise unique selected regular file ambiguous. An actual duplicate
++of the selected canonical path remains ambiguous, including differing sizes.
++Conflicting local offsets remain rejected with their own diagnostic code.
++
++The reader accepts the independently reproduced ZIP64 offset-only case: a
++small selected file can use an ordinary local header while its central entry
++needs ZIP64 to locate that header beyond the 32-bit offset limit. This narrow
++version compatibility does not relax filename, flags, compression, size, CRC,
++descriptor, range or selected-data bounds checks.
++
++Invalid ZIP metadata now has specific constant diagnostic codes for the
++relevant record/check instead of losing the reason in a generic ZIP_INVALID.
++No raw provider path, response body or transfer URL is included in these codes.
++
++When no ranked nearby provider files can be shown, Copy details includes a
++clearly labelled, unranked provider-layout sample of up to five usable safe
++basenames and sizes. The sample preserves unknown ZIP flags and omits provider
++directories, links, account details and credentials. Existing saved diagnostics
++remain readable. This is evidence for investigating unfamiliar layouts; it
++does not authorize choosing an arbitrary returned file.
++
++PRESERVED BEHAVIOR AND LIMITS
++
++The ordinary provider lookup and the sole-explicit-zipped-file archive gate
++are unchanged. The unidentified two-file Zelda layout is not claimed fixed.
++It requires the new bounded filename evidence before format support can be
++chosen safely. A false/missing zipped flag alone does not identify file format.
++
++Archive transfer still requires validated torrent identity and catalog proof,
++exact HTTP 206 ranges and response lengths, supported ZIP metadata, unique
++selected-member identity, exact output bytes and a matching CRC32. CRC32 is an
++integrity check, not publisher authentication. The whole collection is never a
++fallback download. Cancellation, owned temporary cleanup, original download
++identity, pause/resume queue scheduling and bounded link refresh are retained.
++
++VALIDATION AND DELIVERY
++
++The regression fixtures use synthetic data, including an independent standard
++ZIP writer. Final analyzer, test, native Windows build and package results are
++recorded separately in the matching 1.10.7 verification report and bundle.
++Synthetic compatibility tests and a successful build do not establish that the
++user's live TorBox archive now downloads successfully; that requires a retry.
++
++The existing publisher public updater identity and signature verification are
++preserved. This candidate does not publish an automatic-update feed or create
++a replacement publisher key. ScreenScraper application access stays pending.
 diff --git a/WINDOWS-CANDIDATE.txt b/WINDOWS-CANDIDATE.txt
 new file mode 100644
 --- /dev/null
@@ -487,10 +555,12 @@ diff --git a/lib/models/debrid_failure_details.dart b/lib/models/debrid_failure_
 new file mode 100644
 --- /dev/null
 +++ b/lib/models/debrid_failure_details.dart
-@@ -0,0 +1,596 @@
+@@ -0,0 +1,625 @@
 +import 'dart:convert';
 +
 +enum DebridFailureStage { fileSelection, downloadLink, archiveMember }
++
++enum DebridDiagnosticSampleKind { nearby, providerLayout }
 +
 +enum DebridDiagnosticCheck {
 +  torrentIdentityValidated,
@@ -568,6 +638,7 @@ new file mode 100644
 +  final bool? downloadFinished;
 +  final String? downloadState;
 +  final Map<DebridDiagnosticCheck, bool> checks;
++  final DebridDiagnosticSampleKind sampleKind;
 +  final List<DebridDiagnosticFile> candidates;
 +  final int omittedCandidateCount;
 +
@@ -583,6 +654,7 @@ new file mode 100644
 +    required this.downloadFinished,
 +    required this.downloadState,
 +    required this.checks,
++    required this.sampleKind,
 +    required this.candidates,
 +    required this.omittedCandidateCount,
 +  });
@@ -602,6 +674,7 @@ new file mode 100644
 +    final path = _relativePath(requestedPath);
 +    final selectedName = _basename(path);
 +    final sample = <({int rank, int order, DebridDiagnosticFile file})>[];
++    final layoutSample = <DebridDiagnosticFile>[];
 +    var order = 0;
 +    var usable = 0;
 +    var zipped = 0;
@@ -609,6 +682,7 @@ new file mode 100644
 +    for (final file in files) {
 +      if ((file.name != null || file.shortName != null) && file.size != null) {
 +        usable++;
++        if (layoutSample.length < maxCandidates) layoutSample.add(file);
 +      }
 +      if (file.zipped == true) zipped++;
 +      final rank = _candidateRank(selectedName, file);
@@ -623,6 +697,13 @@ new file mode 100644
 +      }
 +      order++;
 +    }
++    // Unexpected containers may share no words with the selected game. Keep a
++    // small usable filename sample only when there is no ranked evidence; these
++    // are observations of the provider layout, never selection candidates.
++    final useLayoutSample = sample.isEmpty && layoutSample.isNotEmpty;
++    final candidates = useLayoutSample
++        ? layoutSample
++        : sample.map((item) => item.file).toList();
 +    return DebridFailureDetails._(
 +      stage: stage,
 +      code: _code(code),
@@ -635,8 +716,12 @@ new file mode 100644
 +      downloadFinished: downloadFinished,
 +      downloadState: _state(downloadState),
 +      checks: Map.unmodifiable(checks),
-+      candidates: List.unmodifiable(sample.map((item) => item.file)),
-+      omittedCandidateCount: nearby - sample.length,
++      sampleKind: useLayoutSample
++          ? DebridDiagnosticSampleKind.providerLayout
++          : DebridDiagnosticSampleKind.nearby,
++      candidates: List.unmodifiable(candidates),
++      omittedCandidateCount:
++          (useLayoutSample ? usable : nearby) - candidates.length,
 +    )._bounded();
 +  }
 +
@@ -661,6 +746,7 @@ new file mode 100644
 +        downloadFinished: downloadFinished,
 +        downloadState: downloadState,
 +        checks: checks,
++        sampleKind: sampleKind,
 +        candidates: candidates,
 +        omittedCandidateCount: omittedCandidateCount,
 +      )._bounded();
@@ -682,6 +768,7 @@ new file mode 100644
 +    downloadFinished: downloadFinished,
 +    downloadState: downloadState,
 +    checks: checks,
++    sampleKind: sampleKind,
 +    candidates: List.unmodifiable(candidates),
 +    omittedCandidateCount: omittedCandidateCount ?? this.omittedCandidateCount,
 +  );
@@ -720,6 +807,7 @@ new file mode 100644
 +    'downloadFinished': downloadFinished,
 +    'downloadState': downloadState,
 +    'checks': {for (final check in checks.entries) check.key.name: check.value},
++    'sampleKind': sampleKind.name,
 +    'candidates': candidates.map((file) => file._toJson()).toList(),
 +    'omittedCandidateCount': omittedCandidateCount,
 +  };
@@ -733,7 +821,12 @@ new file mode 100644
 +    final stages = DebridFailureStage.values.where(
 +      (stage) => stage.name == value['stage'],
 +    );
++    // Existing v1 failures have no sampleKind and contain ranked samples only.
++    final sampleKinds = DebridDiagnosticSampleKind.values.where(
++      (kind) => kind.name == (value['sampleKind'] ?? 'nearby'),
++    );
 +    if (stages.length != 1 ||
++        sampleKinds.length != 1 ||
 +        value['code'] is! String ||
 +        _code(value['code'] as String) != value['code'] ||
 +        value['candidates'] is! List ||
@@ -790,6 +883,7 @@ new file mode 100644
 +            : null,
 +      ),
 +      checks: Map.unmodifiable(checks),
++      sampleKind: sampleKinds.single,
 +      candidates: List.unmodifiable(candidates),
 +      omittedCandidateCount: _count(value['omittedCandidateCount']),
 +    )._bounded();
@@ -817,7 +911,10 @@ new file mode 100644
 +      'Provider files: $providerFileCount; usable: $usableFileCount; marked zipped: $zippedFileCount',
 +      'Present: ${yesNo(downloadPresent)}; finished: ${yesNo(downloadFinished)}; state: ${downloadState ?? 'unknown'}',
 +      for (final check in checks.entries) '${check.key.name}: ${check.value}',
-+      'Nearby file sample: ${candidates.length}; additional matches omitted: $omittedCandidateCount',
++      if (sampleKind == DebridDiagnosticSampleKind.providerLayout)
++        'Provider layout sample (unranked, not matches): ${candidates.length}; additional usable files omitted: $omittedCandidateCount'
++      else
++        'Nearby file sample: ${candidates.length}; additional matches omitted: $omittedCandidateCount',
 +      for (var i = 0; i < candidates.length; i++)
 +        '${i + 1}. name: ${candidates[i].name ?? '[unavailable]'}; short name: ${candidates[i].shortName ?? '[unavailable]'}; bytes: ${candidates[i].size ?? 'unknown'}; zipped: ${yesNo(candidates[i].zipped)}; name had directories: ${candidates[i].nameHadDirectories}',
 +      'Provider directories, account details, links and credentials are omitted.',
@@ -3948,7 +4045,7 @@ diff --git a/lib/services/remote_zip_service.dart b/lib/services/remote_zip_serv
 new file mode 100644
 --- /dev/null
 +++ b/lib/services/remote_zip_service.dart
-@@ -0,0 +1,959 @@
+@@ -0,0 +1,1074 @@
 +import 'dart:async';
 +import 'dart:convert';
 +import 'dart:io';
@@ -4004,7 +4101,7 @@ new file mode 100644
 +    _checkCancelled(cancelToken);
 +    if (target.archiveSize < 22 || target.archiveSize > _maxInteger) {
 +      throw const RemoteZipException(
-+        'ZIP_INVALID',
++        'ZIP_ARCHIVE_SIZE_INVALID',
 +        'The cached ZIP has an invalid size.',
 +      );
 +    }
@@ -4092,8 +4189,10 @@ new file mode 100644
 +const _localSignature = 0x04034b50;
 +const _descriptorSignature = 0x08074b50;
 +
-+Never _invalid([String message = 'The cached ZIP has invalid metadata.']) =>
-+    throw RemoteZipException('ZIP_INVALID', message);
++Never _invalid(
++  String code, [
++  String message = 'The cached ZIP has invalid metadata.',
++]) => throw RemoteZipException(code, message);
 +
 +Never _unsupported(String message) =>
 +    throw RemoteZipException('ZIP_UNSUPPORTED', message);
@@ -4109,13 +4208,17 @@ new file mode 100644
 +    ByteData.sublistView(bytes, offset, offset + 4).getUint32(0, Endian.little);
 +
 +int _u64(Uint8List bytes, int offset) {
-+  if (offset < 0 || offset + 8 > bytes.length) _invalid();
++  if (offset < 0 || offset + 8 > bytes.length) {
++    _invalid('ZIP64_FIELD_TRUNCATED');
++  }
 +  final value = ByteData.sublistView(
 +    bytes,
 +    offset,
 +    offset + 8,
 +  ).getUint64(0, Endian.little);
-+  if (value < 0 || value > _maxInteger) _invalid();
++  if (value < 0 || value > _maxInteger) {
++    _invalid('ZIP64_VALUE_OUT_OF_RANGE');
++  }
 +  return value;
 +}
 +
@@ -4141,6 +4244,7 @@ new file mode 100644
 +    required this.localOffset,
 +    required this.directory,
 +    required this.zip64Sizes,
++    required this.zip64Offset,
 +  });
 +
 +  final String path;
@@ -4154,6 +4258,7 @@ new file mode 100644
 +  final int localOffset;
 +  final bool directory;
 +  final bool zip64Sizes;
++  final bool zip64Offset;
 +}
 +
 +Future<_ZipDirectory> _readDirectory(_RangeReader reader) async {
@@ -4166,12 +4271,20 @@ new file mode 100644
 +    if (_u32(tail, i) == _eocdSignature &&
 +        i + 22 + _u16(tail, i + 20) == tail.length) {
 +      if (endIndex != -1) {
-+        _invalid('The cached ZIP has an ambiguous end record.');
++        _invalid(
++          'ZIP_END_RECORD_AMBIGUOUS',
++          'The cached ZIP has an ambiguous end record.',
++        );
 +      }
 +      endIndex = i;
 +    }
 +  }
-+  if (endIndex < 0) _invalid('The cached file has no complete ZIP end record.');
++  if (endIndex < 0) {
++    _invalid(
++      'ZIP_END_RECORD_MISSING',
++      'The cached file has no complete ZIP end record.',
++    );
++  }
 +  final endOffset = tailStart + endIndex;
 +  final disk = _u16(tail, endIndex + 4);
 +  final directoryDisk = _u16(tail, endIndex + 6);
@@ -4191,7 +4304,9 @@ new file mode 100644
 +      locatorIndex >= 0 && _u32(tail, locatorIndex) == _zip64LocatorSignature;
 +  final needsZip64 =
 +      count32 == 0xffff || size32 == 0xffffffff || offset32 == 0xffffffff;
-+  if (needsZip64 && !hasLocator) _invalid('The ZIP64 end record is missing.');
++  if (needsZip64 && !hasLocator) {
++    _invalid('ZIP64_LOCATOR_MISSING', 'The ZIP64 end record is missing.');
++  }
 +  if (hasLocator) {
 +    if (_u32(tail, locatorIndex + 4) != 0 ||
 +        _u32(tail, locatorIndex + 16) != 1) {
@@ -4199,25 +4314,36 @@ new file mode 100644
 +    }
 +    final zip64Offset = _u64(tail, locatorIndex + 8);
 +    final locatorOffset = tailStart + locatorIndex;
-+    if (!_inBounds(zip64Offset, 56, locatorOffset)) _invalid();
++    if (!_inBounds(zip64Offset, 56, locatorOffset)) {
++      _invalid('ZIP64_END_BOUNDS');
++    }
 +    final record = await reader.read(zip64Offset, 56);
-+    if (_u32(record, 0) != _zip64EndSignature) _invalid();
++    if (_u32(record, 0) != _zip64EndSignature) {
++      _invalid('ZIP64_END_SIGNATURE');
++    }
 +    final recordSize = _u64(record, 4);
 +    if (recordSize != 44 || _u16(record, 14) > 45) {
 +      _unsupported('This ZIP64 metadata extension is not supported.');
 +    }
-+    if (zip64Offset + 12 + recordSize != locatorOffset) _invalid();
++    if (zip64Offset + 12 + recordSize != locatorOffset) {
++      _invalid('ZIP64_END_BOUNDS');
++    }
 +    if (_u32(record, 16) != 0 || _u32(record, 20) != 0) {
 +      _unsupported('Split ZIP64 collections are not supported.');
 +    }
 +    count = _u64(record, 32);
-+    if (_u64(record, 24) != count) _invalid();
++    if (_u64(record, 24) != count) {
++      _invalid('ZIP64_DIRECTORY_MISMATCH');
++    }
 +    directorySize = _u64(record, 40);
 +    directoryOffset = _u64(record, 48);
 +    if ((count32 != 0xffff && count32 != count) ||
 +        (size32 != 0xffffffff && size32 != directorySize) ||
 +        (offset32 != 0xffffffff && offset32 != directoryOffset)) {
-+      _invalid('The ZIP and ZIP64 directories disagree.');
++      _invalid(
++        'ZIP64_DIRECTORY_MISMATCH',
++        'The ZIP and ZIP64 directories disagree.',
++      );
 +    }
 +    boundary = zip64Offset;
 +  }
@@ -4233,17 +4359,22 @@ new file mode 100644
 +  if (!_inBounds(directoryOffset, directorySize, boundary) ||
 +      directoryOffset + directorySize != boundary ||
 +      count > directorySize ~/ 46) {
-+    _invalid('The ZIP directory has inconsistent bounds.');
++    _invalid(
++      'ZIP_DIRECTORY_BOUNDS',
++      'The ZIP directory has inconsistent bounds.',
++    );
 +  }
 +  final bytes = await reader.read(directoryOffset, directorySize);
 +  final entries = <_ZipEntry>[];
-+  final paths = <String>{};
 +  final localOffsets = <int>{};
 +  var cursor = 0;
 +  for (var i = 0; i < count; i++) {
 +    if (!_inBounds(cursor, 46, bytes.length) ||
 +        _u32(bytes, cursor) != _centralSignature) {
-+      _invalid('The ZIP directory is incomplete.');
++      _invalid(
++        'ZIP_DIRECTORY_RECORD_INVALID',
++        'The ZIP directory is incomplete.',
++      );
 +    }
 +    final madeVersion = _u16(bytes, cursor + 4);
 +    final neededVersion = _u16(bytes, cursor + 6);
@@ -4261,7 +4392,7 @@ new file mode 100644
 +    var localOffset = _u32(bytes, cursor + 42);
 +    final recordLength = 46 + nameLength + extraLength + commentLength;
 +    if (!_inBounds(cursor, recordLength, bytes.length) || nameLength == 0) {
-+      _invalid();
++      _invalid('ZIP_DIRECTORY_RECORD_INVALID');
 +    }
 +    final rawName = Uint8List.sublistView(
 +      bytes,
@@ -4276,11 +4407,15 @@ new file mode 100644
 +      ),
 +    );
 +    final zip64Sizes = size == 0xffffffff || compressedSize == 0xffffffff;
++    final zip64Offset = localOffset == 0xffffffff;
 +    final zip64 = extras[1];
 +    var zip64Cursor = 0;
 +    int next64() {
 +      if (zip64 == null) {
-+        _invalid('A ZIP64 member is missing its size metadata.');
++        _invalid(
++          'ZIP64_EXTRA_MISSING',
++          'A ZIP64 member is missing its size metadata.',
++        );
 +      }
 +      final result = _u64(zip64, zip64Cursor);
 +      zip64Cursor += 8;
@@ -4291,7 +4426,9 @@ new file mode 100644
 +    if (compressedSize == 0xffffffff) compressedSize = next64();
 +    if (localOffset == 0xffffffff) localOffset = next64();
 +    if (startDisk == 0xffff) {
-+      if (zip64 == null || !_inBounds(zip64Cursor, 4, zip64.length)) _invalid();
++      if (zip64 == null || !_inBounds(zip64Cursor, 4, zip64.length)) {
++        _invalid('ZIP64_EXTRA_TRUNCATED');
++      }
 +      startDisk = _u32(zip64, zip64Cursor);
 +    }
 +    if (startDisk != 0) _unsupported('Split ZIP members are not supported.');
@@ -4313,11 +4450,16 @@ new file mode 100644
 +        mode == 0x4000 ||
 +        (attributes & 0x10) != 0;
 +    final path = _safePath(decoded, directory: directory);
-+    if (directory && (size != 0 || mode == 0x8000)) _invalid();
-+    if (!paths.add(path) || !localOffsets.add(localOffset)) {
++    if (directory && (size != 0 || mode == 0x8000)) {
++      _invalid('ZIP_DIRECTORY_ENTRY_INVALID');
++    }
++    // ZIP names may repeat, including directory records and unrelated files.
++    // Only the selected regular file must be unambiguous. Physical offsets
++    // remain unique so repeated central rows cannot conceal overlapping data.
++    if (!localOffsets.add(localOffset)) {
 +      throw const RemoteZipException(
-+        'ZIP_MEMBER_AMBIGUOUS',
-+        'The ZIP contains duplicate or conflicting member names or offsets.',
++        'ZIP_LOCAL_OFFSET_CONFLICT',
++        'The ZIP contains duplicate or conflicting local header offsets.',
 +      );
 +    }
 +    if (!_inBounds(
@@ -4325,7 +4467,10 @@ new file mode 100644
 +      30 + nameLength + compressedSize,
 +      directoryOffset,
 +    )) {
-+      _invalid('A ZIP member points outside the file data.');
++      _invalid(
++        'ZIP_MEMBER_BOUNDS',
++        'A ZIP member points outside the file data.',
++      );
 +    }
 +    entries.add(
 +      _ZipEntry(
@@ -4340,12 +4485,16 @@ new file mode 100644
 +        localOffset: localOffset,
 +        directory: directory,
 +        zip64Sizes: zip64Sizes,
++        zip64Offset: zip64Offset,
 +      ),
 +    );
 +    cursor += recordLength;
 +  }
 +  if (cursor != bytes.length) {
-+    _invalid('The ZIP directory has unexpected records.');
++    _invalid(
++      'ZIP_DIRECTORY_TRAILING_DATA',
++      'The ZIP directory has unexpected records.',
++    );
 +  }
 +  return _ZipDirectory(entries, directoryOffset);
 +}
@@ -4363,12 +4512,20 @@ new file mode 100644
 +  final result = <int, Uint8List>{};
 +  var offset = 0;
 +  while (offset < bytes.length) {
-+    if (!_inBounds(offset, 4, bytes.length)) _invalid();
++    if (!_inBounds(offset, 4, bytes.length)) {
++      _invalid('ZIP_EXTRA_FIELD_TRUNCATED');
++    }
 +    final id = _u16(bytes, offset);
 +    final size = _u16(bytes, offset + 2);
 +    offset += 4;
-+    if (!_inBounds(offset, size, bytes.length) || result.containsKey(id)) {
-+      _invalid('The ZIP contains conflicting extra fields.');
++    if (!_inBounds(offset, size, bytes.length)) {
++      _invalid('ZIP_EXTRA_FIELD_TRUNCATED');
++    }
++    if (result.containsKey(id)) {
++      _invalid(
++        'ZIP_EXTRA_FIELD_CONFLICT',
++        'The ZIP contains conflicting extra fields.',
++      );
 +    }
 +    result[id] = Uint8List.sublistView(bytes, offset, offset + size);
 +    offset += size;
@@ -4397,12 +4554,17 @@ new file mode 100644
 +        final unicodeName = utf8.decode(Uint8List.sublistView(unicode, 5));
 +        // The original name must also be safe, even if a Unicode alias is used.
 +        _safePath(name, directory: name.endsWith('/') || name.endsWith('\\'));
-+        if ((flags & 0x800) != 0 && name != unicodeName) _invalid();
++        if ((flags & 0x800) != 0 && name != unicodeName) {
++          _invalid('ZIP_NAME_ENCODING_CONFLICT');
++        }
 +        name = unicodeName;
 +      }
 +    }
 +  } on FormatException {
-+    _invalid('The ZIP has an invalid filename encoding.');
++    _invalid(
++      'ZIP_NAME_ENCODING_INVALID',
++      'The ZIP has an invalid filename encoding.',
++    );
 +  }
 +  return name;
 +}
@@ -4441,6 +4603,10 @@ new file mode 100644
 +  TorrentFileSelectionProof proof,
 +) {
 +  final files = entries.where((entry) => !entry.directory).toList();
++  final pathCounts = <String, int>{};
++  for (final entry in files) {
++    pathCounts.update(entry.path, (count) => count + 1, ifAbsent: () => 1);
++  }
 +  final requested = proof.filePath;
 +  final direct = files.where((entry) {
 +    if (entry.size != proof.expectedSize) return false;
@@ -4451,16 +4617,20 @@ new file mode 100644
 +        (entry.path.endsWith('/$requested') ||
 +            requested.endsWith('/${entry.path}'));
 +  }).toList();
-+  if (direct.length == 1) return _supportedMember(direct.single);
-+  if (direct.length > 1) {
++  if (direct.length == 1 && pathCounts[direct.single.path] == 1) {
++    return _supportedMember(direct.single);
++  }
++  if (direct.isNotEmpty) {
 +    throw const RemoteZipException(
-+      'ZIP_MEMBER_AMBIGUOUS',
-+      'More than one ZIP member matches the selected catalog path and size.',
++      'ZIP_SELECTED_PATH_AMBIGUOUS',
++      'The selected ZIP path matches duplicate or conflicting regular files.',
 +    );
 +  }
 +  var total = 0;
 +  for (final entry in files) {
-+    if (entry.size > _maxInteger - total) _invalid();
++    if (entry.size > _maxInteger - total) {
++      _invalid('ZIP_DIRECTORY_TOTAL_OVERFLOW');
++    }
 +    total += entry.size;
 +  }
 +  if (files.length == proof.fileCount &&
@@ -4474,11 +4644,13 @@ new file mode 100644
 +              p.posix.basename(entry.path) == basename,
 +        )
 +        .toList();
-+    if (candidates.length == 1) return _supportedMember(candidates.single);
-+    if (candidates.length > 1) {
++    if (candidates.length == 1 && pathCounts[candidates.single.path] == 1) {
++      return _supportedMember(candidates.single);
++    }
++    if (candidates.isNotEmpty) {
 +      throw const RemoteZipException(
-+        'ZIP_MEMBER_AMBIGUOUS',
-+        'More than one ZIP member matches the selected filename and size.',
++        'ZIP_SELECTED_NAME_AMBIGUOUS',
++        'The selected ZIP filename matches duplicate or conflicting regular files.',
 +      );
 +    }
 +  }
@@ -4508,28 +4680,56 @@ new file mode 100644
 +      nextOffset = math.min(nextOffset, other.localOffset);
 +    }
 +  }
-+  if (!_inBounds(entry.localOffset, 30, nextOffset)) _invalid();
-+  final header = await reader.read(entry.localOffset, 30);
-+  if (_u32(header, 0) != _localSignature ||
-+      _u16(header, 4) != entry.neededVersion ||
-+      _u16(header, 6) != entry.flags ||
-+      _u16(header, 8) != entry.method) {
-+    _invalid('The ZIP local header disagrees with its directory.');
++  if (!_inBounds(entry.localOffset, 30, nextOffset)) {
++    _invalid('ZIP_LOCAL_HEADER_BOUNDS');
 +  }
++  final header = await reader.read(entry.localOffset, 30);
++  if (_u32(header, 0) != _localSignature) {
++    _invalid('ZIP_LOCAL_HEADER_SIGNATURE');
++  }
++  if (_u16(header, 6) != entry.flags || _u16(header, 8) != entry.method) {
++    _invalid(
++      'ZIP_LOCAL_HEADER_MISMATCH',
++      'The ZIP local header disagrees with its directory.',
++    );
++  }
++  final localVersion = _u16(header, 4);
 +  final localCrc = _u32(header, 14);
 +  final compressed32 = _u32(header, 18);
 +  final size32 = _u32(header, 22);
++  // Standard ZIP writers can elevate only the central version to 4.5 when a
++  // small file's physical offset needs ZIP64. Its ordinary local header still
++  // needs only STORE/Deflate support. No other version mismatch is inferred.
++  final offsetOnlyVersion =
++      entry.zip64Offset &&
++      !entry.zip64Sizes &&
++      entry.neededVersion == 45 &&
++      localVersion <= 45 &&
++      localVersion >= (entry.method == 8 ? 20 : 10) &&
++      compressed32 != 0xffffffff &&
++      size32 != 0xffffffff;
++  if (localVersion != entry.neededVersion && !offsetOnlyVersion) {
++    _invalid(
++      'ZIP_LOCAL_VERSION_MISMATCH',
++      'The ZIP local and central versions are incompatible.',
++    );
++  }
 +  final nameLength = _u16(header, 26);
 +  final extraLength = _u16(header, 28);
 +  final dataOffset = entry.localOffset + 30 + nameLength + extraLength;
-+  if (nameLength != entry.rawName.length ||
-+      !_inBounds(
++  if (nameLength != entry.rawName.length) {
++    _invalid('ZIP_LOCAL_NAME_MISMATCH', 'The ZIP member names disagree.');
++  }
++  if (!_inBounds(
 +        entry.localOffset + 30,
 +        nameLength + extraLength,
 +        nextOffset,
 +      ) ||
 +      !_inBounds(dataOffset, entry.compressedSize, nextOffset)) {
-+    _invalid('The ZIP member has inconsistent data bounds.');
++    _invalid(
++      'ZIP_LOCAL_DATA_BOUNDS',
++      'The ZIP member has inconsistent data bounds.',
++    );
 +  }
 +  final variable = await reader.read(
 +    entry.localOffset + 30,
@@ -4537,7 +4737,7 @@ new file mode 100644
 +  );
 +  for (var i = 0; i < nameLength; i++) {
 +    if (variable[i] != entry.rawName[i]) {
-+      _invalid('The ZIP member names disagree.');
++      _invalid('ZIP_LOCAL_NAME_MISMATCH', 'The ZIP member names disagree.');
 +    }
 +  }
 +  final extras = _extras(Uint8List.sublistView(variable, nameLength));
@@ -4550,14 +4750,16 @@ new file mode 100644
 +      entry.flags,
 +      extras,
 +    );
-+    if (_safePath(decoded, directory: false) != entry.path) _invalid();
++    if (_safePath(decoded, directory: false) != entry.path) {
++      _invalid('ZIP_LOCAL_NAME_MISMATCH');
++    }
 +  }
 +  final wide = size32 == 0xffffffff || compressed32 == 0xffffffff;
 +  var size = size32;
 +  var compressed = compressed32;
 +  if (wide) {
 +    final zip64 = extras[1];
-+    if (zip64 == null) _invalid();
++    if (zip64 == null) _invalid('ZIP64_LOCAL_EXTRA_MISSING');
 +    var cursor = 0;
 +    if (size32 == 0xffffffff) {
 +      size = _u64(zip64, cursor);
@@ -4574,12 +4776,17 @@ new file mode 100644
 +          ((localCrc != 0 && localCrc != entry.crc) ||
 +              (size != 0 && size != entry.size) ||
 +              (compressed != 0 && compressed != entry.compressedSize)))) {
-+    _invalid('The ZIP member sizes or checksum disagree.');
++    _invalid(
++      'ZIP_LOCAL_METADATA_MISMATCH',
++      'The ZIP member sizes or checksum disagree.',
++    );
 +  }
 +  if (descriptor) {
 +    final offset = dataOffset + entry.compressedSize;
 +    final length = math.min(24, nextOffset - offset);
-+    if (length < 12) _invalid('The ZIP data descriptor is missing.');
++    if (length < 12) {
++      _invalid('ZIP_DESCRIPTOR_MISSING', 'The ZIP data descriptor is missing.');
++    }
 +    final bytes = await reader.read(offset, length);
 +    final zip64 = wide || entry.zip64Sizes;
 +    bool matches(int start) {
@@ -4598,7 +4805,10 @@ new file mode 100644
 +    final unsigned = matches(0);
 +    final signed = _u32(bytes, 0) == _descriptorSignature && matches(4);
 +    if (unsigned == signed) {
-+      _invalid('The ZIP data descriptor is invalid or ambiguous.');
++      _invalid(
++        'ZIP_DESCRIPTOR_INVALID',
++        'The ZIP data descriptor is invalid or ambiguous.',
++      );
 +    }
 +  }
 +  return dataOffset;
@@ -4621,7 +4831,7 @@ new file mode 100644
 +  var _requests = 0;
 +
 +  Future<Uint8List> read(int start, int length) async {
-+    if (length > _maxDirectoryBytes) _invalid();
++    if (length > _maxDirectoryBytes) _invalid('ZIP_METADATA_LIMIT');
 +    final result = BytesBuilder(copy: false);
 +    await for (final chunk in stream(start, length)) {
 +      result.add(chunk);
@@ -4647,7 +4857,9 @@ new file mode 100644
 +    _RangeCancellation requests,
 +  ) async* {
 +    _checkCancelled(cancelToken);
-+    if (length <= 0 || !_inBounds(start, length, size)) _invalid();
++    if (length <= 0 || !_inBounds(start, length, size)) {
++      _invalid('ZIP_RANGE_BOUNDS');
++    }
 +    final end = start + length - 1;
 +    Response<ResponseBody>? response;
 +    for (var redirects = 0; redirects <= 5; redirects++) {
@@ -7808,7 +8020,7 @@ diff --git a/pubspec.yaml b/pubspec.yaml
  description: "NOMROM game browser and download library for Windows, macOS and Android"
  publish_to: 'none'
 -version: 1.10.2+23
-+version: 1.10.6+27
++version: 1.10.7+28
  
  environment:
    sdk: ^3.10.1
@@ -7827,7 +8039,7 @@ diff --git a/test/debrid/debrid_failure_details_test.dart b/test/debrid/debrid_f
 new file mode 100644
 --- /dev/null
 +++ b/test/debrid/debrid_failure_details_test.dart
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,555 @@
 +import 'dart:convert';
 +
 +import 'package:flutter_test/flutter_test.dart';
@@ -7840,12 +8052,13 @@ new file mode 100644
 +      'Redump/Microsoft - Xbox/Halo - Combat Evolved (USA) (Rev 2).zip',
 +  Iterable<DebridDiagnosticFile>? files,
 +  String code = 'FILE_NOT_FOUND',
++  int providerFileCount = 2780,
 +}) => DebridFailureDetails.torbox(
 +  stage: DebridFailureStage.fileSelection,
 +  code: code,
 +  requestedPath: path,
 +  expectedSize: 6884752659,
-+  providerFileCount: 2780,
++  providerFileCount: providerFileCount,
 +  files:
 +      files ??
 +      [
@@ -8078,21 +8291,233 @@ new file mode 100644
 +  );
 +
 +  test(
-+    'does not sample unrelated collection files or invent unknown state',
++    'labels two unmarked provider files as layout evidence without inventing flags or state',
 +    () {
 +      final details = DebridFailureDetails.torbox(
 +        stage: DebridFailureStage.downloadLink,
 +        code: 'FILE_NOT_FOUND',
 +        requestedPath: 'Halo.zip',
 +        expectedSize: 10,
-+        providerFileCount: 100,
++        providerFileCount: 2,
 +        downloadState: 'https://secret.invalid/state',
-+        files: [DebridDiagnosticFile(name: 'Unrelated Game.zip', size: 10)],
++        files: [
++          DebridDiagnosticFile(
++            name: '/srv/private-account/Collection.7z.001',
++            shortName: 'Collection.7z.001',
++            size: 10,
++            zipped: false,
++          ),
++          DebridDiagnosticFile(
++            name: '/srv/private-account/Collection.7z.002',
++            size: 20,
++          ),
++        ],
 +      ).sanitized('key')!;
-+      expect(details.candidates, isEmpty);
++      expect(details.sampleKind, DebridDiagnosticSampleKind.providerLayout);
++      expect(details.candidates.map((file) => file.name), [
++        'Collection.7z.001',
++        'Collection.7z.002',
++      ]);
++      expect(details.candidates.first.zipped, isFalse);
++      expect(details.candidates.last.zipped, isNull);
++      expect(details.usableFileCount, 2);
++      expect(details.zippedFileCount, 0);
 +      expect(details.downloadState, 'other');
-+      expect(details.toReport(), contains('Stage: download link'));
-+      expect(details.toReport(), isNot(contains('Unrelated')));
++      final report = details.toReport();
++      expect(report, contains('Stage: download link'));
++      expect(
++        report,
++        contains('Provider layout sample (unranked, not matches): 2'),
++      );
++      expect(report, contains('zipped: false'));
++      expect(report, contains('zipped: unknown'));
++      expect(report, isNot(contains('Nearby file sample')));
++      expect(report, isNot(contains('private-account')));
++      expect(report, isNot(contains('/srv/')));
++      expect(report, isNot(contains('secret.invalid')));
++    },
++  );
++
++  test('a later nearby match suppresses the unranked layout sample', () {
++    final details = _details(
++      path: 'Halo.zip',
++      providerFileCount: 8,
++      files: [
++        for (var i = 0; i < 7; i++)
++          DebridDiagnosticFile(name: 'Collection $i.part', size: i + 1),
++        DebridDiagnosticFile(name: '/provider/Halo.zip', size: 10),
++      ],
++    ).sanitized('key')!;
++    expect(details.sampleKind, DebridDiagnosticSampleKind.nearby);
++    expect(details.candidates.single.name, 'Halo.zip');
++    expect(details.omittedCandidateCount, 0);
++    expect(details.toReport(), contains('Nearby file sample: 1'));
++    expect(details.toReport(), isNot(contains('Collection')));
++    expect(details.toReport(), isNot(contains('Provider layout sample')));
++  });
++
++  test('layout sampling caps usable files and counts omitted observations', () {
++    final details = _details(
++      path: 'Halo.zip',
++      providerFileCount: 14,
++      files: [
++        DebridDiagnosticFile(name: 'No size.bin'),
++        DebridDiagnosticFile(name: 'https://secret.invalid/file', size: 12),
++        for (var i = 0; i < 12; i++)
++          DebridDiagnosticFile(name: 'Collection $i.part', size: i + 1),
++      ],
++    ).sanitized('key')!;
++    expect(details.sampleKind, DebridDiagnosticSampleKind.providerLayout);
++    expect(details.usableFileCount, 12);
++    expect(details.candidates.map((file) => file.name), [
++      for (var i = 0; i < 5; i++) 'Collection $i.part',
++    ]);
++    expect(details.omittedCandidateCount, 7);
++    expect(details.toReport(), contains('additional usable files omitted: 7'));
++    expect(details.toReport(), isNot(contains('No size')));
++    expect(details.toReport(), isNot(contains('secret.invalid')));
++  });
++
++  test('long layout samples fit storage and report budgets after trimming', () {
++    final details = _details(
++      path: 'Halo.zip',
++      providerFileCount: 20,
++      files: List.generate(
++        20,
++        (i) => DebridDiagnosticFile(
++          name: 'Collection ${List.filled(70, '界').join()} $i.part',
++          shortName: 'Collection ${List.filled(70, '界').join()} $i.part',
++          size: i + 1,
++        ),
++      ),
++    ).sanitized('key')!;
++    expect(details.sampleKind, DebridDiagnosticSampleKind.providerLayout);
++    expect(details.candidates, isNotEmpty);
++    expect(details.candidates.length, lessThanOrEqualTo(5));
++    expect(details.omittedCandidateCount, 20 - details.candidates.length);
++    final encoded = DownloadFailureStorage.encode(
++      List.filled(500, '界').join(),
++      details,
++    )!;
++    final restored = DownloadFailureStorage.decode(encoded).diagnostics!;
++    expect(utf8.encode(encoded).length, lessThanOrEqualTo(4096));
++    expect(utf8.encode(details.toReport()).length, lessThanOrEqualTo(4096));
++    expect(restored.sampleKind, DebridDiagnosticSampleKind.providerLayout);
++    expect(restored.toReport(), details.toReport());
++  });
++
++  test(
++    'unranked samples redact raw and encoded credentials before storage',
++    () {
++      for (final key in [
++        'API_SECRET_0123456789',
++        'literal%20percent-key',
++        'private-part/final-secret',
++      ]) {
++        final details = _details(
++          path: 'Halo.zip',
++          providerFileCount: 3,
++          files: [
++            DebridDiagnosticFile(
++              name: '/srv/private-account/Collection $key.part',
++              shortName: Uri.encodeComponent(
++                Uri.encodeComponent('Collection $key.part'),
++              ),
++              size: 10,
++            ),
++            DebridDiagnosticFile(
++              name: 'https://secret.invalid/file?token=$key',
++              size: 20,
++            ),
++            DebridDiagnosticFile(
++              name: Uri.encodeComponent('Bearer $key'),
++              size: 30,
++            ),
++          ],
++        ).sanitized(key)!;
++        expect(details.sampleKind, DebridDiagnosticSampleKind.providerLayout);
++        expect(details.candidates, hasLength(1));
++        final encoded = DownloadFailureStorage.encode('Failed.', details)!;
++        final restored = DownloadFailureStorage.decode(encoded).diagnostics!;
++        for (final value in [
++          encoded,
++          details.toReport(),
++          restored.toReport(),
++        ]) {
++          for (final forbidden in [
++            key,
++            Uri.decodeComponent(key),
++            Uri.encodeComponent(key),
++            'final-secret',
++            'private-account',
++            '/srv/',
++            'https:',
++            'secret.invalid',
++            'Bearer ',
++          ]) {
++            expect(value, isNot(contains(forbidden)), reason: forbidden);
++          }
++          expect(value, contains('[redacted]'));
++        }
++      }
++    },
++  );
++
++  test(
++    'legacy sample labels remain nearby and unknown labels are rejected',
++    () {
++      final encoded = DownloadFailureStorage.encode(
++        'Failed.',
++        _details().sanitized('key'),
++      )!;
++      final envelope =
++          jsonDecode(encoded.substring(DownloadFailureStorage.prefix.length))
++              as Map<String, dynamic>;
++      final diagnostics = envelope['diagnostics'] as Map<String, dynamic>;
++      diagnostics.remove('sampleKind');
++      final restored = DownloadFailureStorage.decode(
++        '${DownloadFailureStorage.prefix}${jsonEncode(envelope)}',
++      ).diagnostics!;
++      expect(restored.sampleKind, DebridDiagnosticSampleKind.nearby);
++      expect(restored.toReport(), contains('Nearby file sample: 1'));
++      diagnostics['sampleKind'] = 'https://secret.invalid/unknown';
++      expect(
++        DownloadFailureStorage.decode(
++          '${DownloadFailureStorage.prefix}${jsonEncode(envelope)}',
++        ).diagnostics,
++        isNull,
++      );
++    },
++  );
++
++  test(
++    'granular archive reasons and layout labels survive task persistence',
++    () {
++      final details = _details(
++        path: 'Halo.zip',
++        providerFileCount: 1,
++        files: [DebridDiagnosticFile(name: 'Collection.part', size: 10)],
++      ).sanitized('key')!.forArchiveFailure('ZIP_LOCAL_HEADER_MISMATCH');
++      final task = _task(details).copyWith(
++        error: 'The ZIP local header disagrees. (ZIP_LOCAL_HEADER_MISMATCH)',
++        diagnostics: details,
++      );
++      final restored = DownloadTask.fromMap(task.toMap());
++      expect(restored.error, task.error);
++      expect(restored.diagnostics!.stage, DebridFailureStage.archiveMember);
++      expect(restored.diagnostics!.code, 'ZIP_LOCAL_HEADER_MISMATCH');
++      expect(
++        restored.diagnostics!.sampleKind,
++        DebridDiagnosticSampleKind.providerLayout,
++      );
++      expect(restored.diagnostics!.candidates.single.name, 'Collection.part');
++      final report = restored.diagnostics!.toReport();
++      expect(report, contains('Stage: archive member'));
++      expect(report, contains('Code: ZIP_LOCAL_HEADER_MISMATCH'));
++      expect(
++        report,
++        contains('Provider layout sample (unranked, not matches): 1'),
++      );
 +    },
 +  );
 +
@@ -12192,7 +12617,7 @@ diff --git a/test/remote_zip_service_test.dart b/test/remote_zip_service_test.da
 new file mode 100644
 --- /dev/null
 +++ b/test/remote_zip_service_test.dart
-@@ -0,0 +1,1328 @@
+@@ -0,0 +1,1492 @@
 +import 'dart:async';
 +import 'dart:convert';
 +import 'dart:io';
@@ -12451,6 +12876,20 @@ new file mode 100644
 +    length = cursor + endBytes.length;
 +  }
 +
++  _Zip.serialized(
++    this.entries, {
++    required int archiveLength,
++    required int centralOffset,
++    required int centralSize,
++    required int segmentOffset,
++    required String serializedBase64,
++  }) {
++    length = archiveLength;
++    directoryOffset = centralOffset;
++    directorySize = centralSize;
++    segments.add(_Segment(segmentOffset, base64Decode(serializedBase64)));
++  }
++
 +  final List<_Entry> entries;
 +  final segments = <_Segment>[];
 +  final localOffsets = <int>[];
@@ -12624,6 +13063,63 @@ new file mode 100644
 +
 +Matcher _code(String code) =>
 +    isA<RemoteZipException>().having((e) => e.code, 'code', code);
++
++// Exact bytes from CPython's independent zipfile writer, verified by its
++// reader/testzip(). Regenerate with standard-zip-fixture-generator.py.txt in
++// the 1.10.7 evidence. The ZIP64 case is one 237-byte segment at >4 GiB.
++final _standardPayload = base64Decode('c3ludGhldGljIHNlbGVjdGVkIGJ5dGVzCg==');
++
++_Zip _standardWriterZip(String name) {
++  const fixtures = {
++    'duplicate_directories': (
++      data:
++          'UEsDBBQAAAAAAAAAIQAAAAAAAAAAAAAAAAAFAAAAUGFjay9QSwMEFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAABQYWNrL1BLAwQUAAAAAAAAACEAixA8ohkAAAAZAAAADQAAAFBhY2svZ2FtZS56aXBzeW50aGV0aWMgc2VsZWN0ZWQgYnl0ZXMKUEsBAhQDFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAIABAAAAAFBhY2svUEsBAhQDFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAIABIwAAAFBhY2svUEsBAhQDFAAAAAAAAAAhAIsQPKIZAAAAGQAAAA0AAAAAAAAAAAAAAIABRgAAAFBhY2svZ2FtZS56aXBQSwUGAAAAAAMAAwChAAAAigAAAAAA',
++      length: 321,
++      offset: 0,
++      centralOffset: 138,
++      centralSize: 161,
++    ),
++    'case_variant_directories': (
++      data:
++          'UEsDBBQAAAAAAAAAIQAAAAAAAAAAAAAAAAAFAAAAUGFjay9QSwMEFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAABwYWNrL1BLAwQUAAAAAAAAACEAixA8ohkAAAAZAAAADQAAAFBhY2svZ2FtZS56aXBzeW50aGV0aWMgc2VsZWN0ZWQgYnl0ZXMKUEsBAhQDFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAIABAAAAAFBhY2svUEsBAhQDFAAAAAAAAAAhAAAAAAAAAAAAAAAAAAUAAAAAAAAAAAAAAIABIwAAAHBhY2svUEsBAhQDFAAAAAAAAAAhAIsQPKIZAAAAGQAAAA0AAAAAAAAAAAAAAIABRgAAAFBhY2svZ2FtZS56aXBQSwUGAAAAAAMAAwChAAAAigAAAAAA',
++      length: 321,
++      offset: 0,
++      centralOffset: 138,
++      centralSize: 161,
++    ),
++    'unrelated_case_paths': (
++      data:
++          'UEsDBBQAAAAAAAAAIQCLEDyiGQAAABkAAAANAAAAUGFjay9nYW1lLnppcHN5bnRoZXRpYyBzZWxlY3RlZCBieXRlcwpQSwMEFAAAAAAAAAAhAEO+t+gBAAAAAQAAABAAAABPdGhlci9yZWFkbWUudHh0YVBLAwQUAAAAAAAAACEA+e++cQEAAAABAAAAEAAAAE90aGVyL1JFQURNRS5UWFRiUEsBAhQDFAAAAAAAAAAhAIsQPKIZAAAAGQAAAA0AAAAAAAAAAAAAAIABAAAAAFBhY2svZ2FtZS56aXBQSwECFAMUAAAAAAAAACEAQ7636AEAAAABAAAAEAAAAAAAAAAAAAAAgAFEAAAAT3RoZXIvcmVhZG1lLnR4dFBLAQIUAxQAAAAAAAAAIQD5775xAQAAAAEAAAAQAAAAAAAAAAAAAACAAXMAAABPdGhlci9SRUFETUUuVFhUUEsFBgAAAAADAAMAtwAAAKIAAAAAAA==',
++      length: 367,
++      offset: 0,
++      centralOffset: 162,
++      centralSize: 183,
++    ),
++    'zip64_offset_only': (
++      data:
++          'UEsDBBQAAAAAAAAAIQCLEDyiGQAAABkAAAANAAAAUGFjay9nYW1lLnppcHN5bnRoZXRpYyBzZWxlY3RlZCBieXRlcwpQSwECLQMtAAAAAAAAACEAixA8ohkAAAAZAAAADQAMAAAAAAAAAAAAgAH/////UGFjay9nYW1lLnppcAEACACAAAAAAQAAAFBLBgYsAAAAAAAAAC0ALQAAAAAAAAAAAAEAAAAAAAAAAQAAAAAAAABHAAAAAAAAAMQAAAABAAAAUEsGBwAAAAALAQAAAQAAAAEAAABQSwUGAAAAAAEAAQBHAAAA/////wAA',
++      length: 4294967661,
++      offset: 4294967424,
++      centralOffset: 4294967492,
++      centralSize: 71,
++    ),
++  };
++  final fixture = fixtures[name]!;
++  return _Zip.serialized(
++    [
++      _Entry('Pack/game.zip', _standardPayload),
++      if (name == 'unrelated_case_paths') ...[
++        _Entry('Other/readme.txt', [97]),
++        _Entry('Other/README.TXT', [98]),
++      ],
++    ],
++    archiveLength: fixture.length,
++    centralOffset: fixture.centralOffset,
++    centralSize: fixture.centralSize,
++    segmentOffset: fixture.offset,
++    serializedBase64: fixture.data,
++  );
++}
 +
 +void main() {
 +  TestWidgetsFlutterBinding.ensureInitialized();
@@ -12858,7 +13354,7 @@ new file mode 100644
 +        ],
 +      );
 +      await h.expectPreservedFailure(
-+        _code('ZIP_MEMBER_AMBIGUOUS'),
++        _code('ZIP_SELECTED_PATH_AMBIGUOUS'),
 +        selection: proof,
 +      );
 +    },
@@ -13187,7 +13683,13 @@ new file mode 100644
 +          ),
 +        ]),
 +      );
-+      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      await h.expectPreservedFailure(
++        _code(switch (kind) {
++          'path' => 'ZIP_LOCAL_NAME_MISMATCH',
++          'size' => 'ZIP_LOCAL_METADATA_MISMATCH',
++          _ => 'ZIP_LOCAL_HEADER_MISMATCH',
++        }),
++      );
 +    });
 +  }
 +
@@ -13225,7 +13727,7 @@ new file mode 100644
 +  }
 +
 +  test(
-+    'case-folded duplicate paths are rejected before choosing a file',
++    'selected case-folded duplicate paths remain ambiguous even with different sizes',
 +    () async {
 +      final h = await _Harness.start(
 +        _Zip([
@@ -13233,7 +13735,7 @@ new file mode 100644
 +          _Entry('PACK/GAME.ZIP', [1]),
 +        ]),
 +      );
-+      await h.expectPreservedFailure(_code('ZIP_MEMBER_AMBIGUOUS'));
++      await h.expectPreservedFailure(_code('ZIP_SELECTED_PATH_AMBIGUOUS'));
 +    },
 +  );
 +
@@ -13362,7 +13864,7 @@ new file mode 100644
 +    zip.patch16(zip.length - 22 + 8, 2);
 +    zip.patch16(zip.length - 22 + 10, 2);
 +    final h = await _Harness.start(zip);
-+    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    await h.expectPreservedFailure(_code('ZIP_DIRECTORY_BOUNDS'));
 +  });
 +
 +  test('split ZIP metadata is rejected', () async {
@@ -13381,7 +13883,7 @@ new file mode 100644
 +        7,
 +      );
 +      final h = await _Harness.start(zip);
-+      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      await h.expectPreservedFailure(_code('ZIP64_EXTRA_MISSING'));
 +    },
 +  );
 +
@@ -13394,7 +13896,7 @@ new file mode 100644
 +      ]);
 +      zip.patch32(zip.directoryOffset + 20, _game.length + 10);
 +      final h = await _Harness.start(zip);
-+      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      await h.expectPreservedFailure(_code('ZIP_LOCAL_DATA_BOUNDS'));
 +    },
 +  );
 +
@@ -13467,7 +13969,7 @@ new file mode 100644
 +        ),
 +      ]),
 +    );
-+    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    await h.expectPreservedFailure(_code('ZIP_NAME_ENCODING_INVALID'));
 +  });
 +
 +  test(
@@ -13486,7 +13988,7 @@ new file mode 100644
 +    final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
 +    zip.patch32(zip.length - 98 + 48 + 4, 0xffffffff);
 +    final h = await _Harness.start(zip);
-+    await h.expectPreservedFailure(_code('ZIP_INVALID'));
++    await h.expectPreservedFailure(_code('ZIP64_VALUE_OUT_OF_RANGE'));
 +  });
 +
 +  test(
@@ -13497,7 +13999,7 @@ new file mode 100644
 +      ]);
 +      zip.patch32(zip.dataOffsets.first + zip.compressedSizes.first + 4, 1);
 +      final h = await _Harness.start(zip);
-+      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      await h.expectPreservedFailure(_code('ZIP_DESCRIPTOR_INVALID'));
 +      expect(
 +        h.requests,
 +        isNot(
@@ -13516,8 +14018,95 @@ new file mode 100644
 +      final zip = _Zip([_Entry('Pack/game.zip', _game)]);
 +      zip.patch16(zip.length - 2, 1);
 +      final h = await _Harness.start(zip);
-+      await h.expectPreservedFailure(_code('ZIP_INVALID'));
++      await h.expectPreservedFailure(_code('ZIP_END_RECORD_MISSING'));
 +      expect(h.requests.length, 1);
++    },
++  );
++
++  for (final fixture in [
++    'duplicate_directories',
++    'case_variant_directories',
++    'unrelated_case_paths',
++  ]) {
++    test(
++      'independent ZIP writer accepts $fixture around a unique selected file',
++      () async {
++        final h = await _Harness.start(_standardWriterZip(fixture));
++        await h.download();
++        expect(await h.destination.readAsBytes(), _standardPayload);
++      },
++    );
++  }
++
++  test(
++    'independent ZIP64 writer permits local20 central45 for offset only',
++    () async {
++      final zip = _standardWriterZip('zip64_offset_only');
++      final h = await _Harness.start(zip);
++      await h.download();
++      expect(zip.length, 4294967661);
++      expect(await h.destination.readAsBytes(), _standardPayload);
++      expect(h.bytesSent, lessThan(70000));
++      expect(h.requests.any((range) => range.$1 > 0x100000000), isTrue);
++    },
++  );
++
++  test('ordinary local version mismatch is still rejected', () async {
++    final zip = _Zip([_Entry('Pack/game.zip', _game)]);
++    zip.patch16(zip.localOffsets.first + 4, 10);
++    final h = await _Harness.start(zip);
++    await h.expectPreservedFailure(_code('ZIP_LOCAL_VERSION_MISMATCH'));
++  });
++
++  test(
++    'local ZIP64 sizes do not qualify for the offset-only version exception',
++    () async {
++      final zip = _Zip([_Entry('Pack/game.zip', _game)], zip64: true);
++      zip.patch16(zip.localOffsets.first + 4, 20);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_LOCAL_VERSION_MISMATCH'));
++    },
++  );
++
++  test(
++    'offset-only ZIP64 still requires a sufficient local format version',
++    () async {
++      final zip = _standardWriterZip('zip64_offset_only');
++      zip.patch16(0x100000000 + 128 + 4, 9);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_LOCAL_VERSION_MISMATCH'));
++    },
++  );
++
++  test('selected exact duplicate regular files remain ambiguous', () async {
++    final h = await _Harness.start(
++      _Zip([_Entry('Pack/game.zip', _game), _Entry('Pack/game.zip', _game)]),
++    );
++    await h.expectPreservedFailure(_code('ZIP_SELECTED_PATH_AMBIGUOUS'));
++  });
++
++  test(
++    'duplicate physical offsets retain a distinct overlap failure',
++    () async {
++      final zip = _Zip([
++        _Entry('Pack/game.zip', _game),
++        _Entry('Other/readme.txt', [1]),
++      ]);
++      final secondHeader =
++          zip.directoryOffset + 46 + utf8.encode('Pack/game.zip').length;
++      zip.patch32(secondHeader + 42, zip.localOffsets.first);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP_LOCAL_OFFSET_CONFLICT'));
++    },
++  );
++
++  test(
++    'ZIP64 and ordinary directory disagreement remains a specific failure',
++    () async {
++      final zip = _standardWriterZip('zip64_offset_only');
++      zip.patch32(zip.length - 22 + 12, zip.directorySize + 1);
++      final h = await _Harness.start(zip);
++      await h.expectPreservedFailure(_code('ZIP64_DIRECTORY_MISMATCH'));
 +    },
 +  );
 +}
