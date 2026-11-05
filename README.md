@@ -252,7 +252,7 @@ NOMROM does not bundle games, BIOS files or an emulator. Use it with content you
 
 ## Credits and source
 
-**Made by Mark Mateo.**
+**Made by Mateo.**
 
 NOMROM's Windows edition builds on NOMROM for Mac and the original [Romgi by Christian Prado](https://github.com/caprado/romgi). Original MIT attribution is preserved in the source and release files. The Windows source archive is included with each release.
 
