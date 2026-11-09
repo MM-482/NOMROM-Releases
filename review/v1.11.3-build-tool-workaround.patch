@@ -1,0 +1,11 @@
+--- a/lib/src/utils/run_process.dart
++++ b/lib/src/utils/run_process.dart
+@@ -41,7 +41,7 @@
+     arguments,
+     workingDirectory: workingDirectory?.toFilePath(),
+     environment: environment,
+-    runInShell: Platform.isWindows && workingDirectory != null,
++    runInShell: Platform.isWindows && (executable.path.toLowerCase().endsWith('.bat') || executable.path.toLowerCase().endsWith('.cmd')),
+   );
+ 
+   final stdoutSub = process.stdout.listen((List<int> data) {

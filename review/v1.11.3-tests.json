@@ -1,0 +1,376 @@
+{
+  "version": "1.11.3+32",
+  "runner": "official Flutter test runner; Windows x64",
+  "success": true,
+  "counts": {
+    "passed": 1395,
+    "failed": 0,
+    "skipped": 9
+  },
+  "newRegressionTests": 32,
+  "regressionSuites": {
+    "download_torrent_finalization_test.dart": {
+      "passed": 16
+    },
+    "extraction_receipt_test.dart": {
+      "passed": 10
+    },
+    "download_extraction_reuse_test.dart": {
+      "passed": 6
+    }
+  },
+  "suites": {
+    "app_design_browse_test.dart": {
+      "passed": 5
+    },
+    "app_design_selector_widget_test.dart": {
+      "passed": 3
+    },
+    "app_design_test.dart": {
+      "passed": 9
+    },
+    "artwork_queue_cancellation_test.dart": {
+      "passed": 4
+    },
+    "browse_history_actions_test.dart": {
+      "passed": 3
+    },
+    "browse_results_widget_test.dart": {
+      "passed": 50
+    },
+    "build_details_service_test.dart": {
+      "passed": 8
+    },
+    "build_details_tile_test.dart": {
+      "passed": 3
+    },
+    "build_probe_test.dart": {
+      "passed": 10
+    },
+    "catalog_artwork_test.dart": {
+      "passed": 7
+    },
+    "catalog_game_index_test.dart": {
+      "passed": 10
+    },
+    "catalog_image_selection_test.dart": {
+      "passed": 3
+    },
+    "catalog_metadata_artwork_test.dart": {
+      "passed": 11
+    },
+    "catalog_startup_order_test.dart": {
+      "passed": 4
+    },
+    "catalog_update_test.dart": {
+      "passed": 8
+    },
+    "collection_lifecycle_audit_test.dart": {
+      "passed": 5
+    },
+    "cover_gallery_layout_test.dart": {
+      "passed": 20
+    },
+    "database_setup_lifecycle_test.dart": {
+      "passed": 3
+    },
+    "debrid_failure_details_test.dart": {
+      "passed": 17
+    },
+    "debrid_link_persistence_test.dart": {
+      "passed": 4
+    },
+    "debrid_service_test.dart": {
+      "passed": 55
+    },
+    "debrid_settings_section_test.dart": {
+      "passed": 16
+    },
+    "desktop_window_frame_test.dart": {
+      "passed": 5
+    },
+    "desktop_workspace_widget_test.dart": {
+      "passed": 8
+    },
+    "download_debrid_failures_test.dart": {
+      "passed": 4
+    },
+    "download_extraction_reuse_test.dart": {
+      "passed": 6
+    },
+    "download_failure_diagnostics_test.dart": {
+      "passed": 20
+    },
+    "download_integrity_test.dart": {
+      "passed": 23
+    },
+    "download_link_test.dart": {
+      "passed": 4
+    },
+    "download_provider_lifecycle_test.dart": {
+      "passed": 8
+    },
+    "download_provider_routing_test.dart": {
+      "passed": 5
+    },
+    "download_service_grouping_test.dart": {
+      "passed": 8
+    },
+    "download_source_choices_test.dart": {
+      "passed": 5
+    },
+    "download_source_recovery_test.dart": {
+      "passed": 30
+    },
+    "download_torrent_finalization_test.dart": {
+      "passed": 16
+    },
+    "download_torrent_queue_test.dart": {
+      "passed": 4
+    },
+    "download_update_preparation_test.dart": {
+      "passed": 9
+    },
+    "downloads_diagnostics_copy_test.dart": {
+      "passed": 4
+    },
+    "downloads_screen_actions_test.dart": {
+      "passed": 15
+    },
+    "downloads_source_recovery_test.dart": {
+      "passed": 6
+    },
+    "entry_detail_cover_test.dart": {
+      "passed": 23
+    },
+    "entry_download_button_test.dart": {
+      "passed": 11
+    },
+    "entry_inspector_test.dart": {
+      "passed": 29
+    },
+    "extraction_receipt_test.dart": {
+      "passed": 10
+    },
+    "game_artwork_cache_test.dart": {
+      "passed": 10
+    },
+    "game_metadata_service_test.dart": {
+      "passed": 61
+    },
+    "game_versions_control_test.dart": {
+      "passed": 14
+    },
+    "host_adapter_test.dart": {
+      "passed": 14
+    },
+    "http_resume_transport_test.dart": {
+      "passed": 27
+    },
+    "internet_archive_auth_manager_test.dart": {
+      "passed": 68
+    },
+    "internet_archive_auth_provider_test.dart": {
+      "passed": 4
+    },
+    "library_audit_test.dart": {
+      "passed": 7,
+      "skipped": 1
+    },
+    "library_open_with_widget_test.dart": {
+      "passed": 6
+    },
+    "libretro_provider_test.dart": {
+      "passed": 25
+    },
+    "link_resolver_debrid_test.dart": {
+      "passed": 6
+    },
+    "link_resolver_test.dart": {
+      "passed": 6
+    },
+    "mac_archive_login_widget_test.dart": {
+      "passed": 12
+    },
+    "mac_archive_service_test.dart": {
+      "skipped": 5
+    },
+    "mac_navigation_sidebar_test.dart": {
+      "passed": 17
+    },
+    "mac_wheel_scroll_controller_test.dart": {
+      "passed": 13
+    },
+    "metadata_consumer_latency_test.dart": {
+      "passed": 4
+    },
+    "metadata_credentials_audit_test.dart": {
+      "passed": 2
+    },
+    "metadata_provider_tile_test.dart": {
+      "passed": 23
+    },
+    "playlist_writer_test.dart": {
+      "passed": 11
+    },
+    "popular_games_test.dart": {
+      "passed": 2
+    },
+    "realdebrid_provider_test.dart": {
+      "passed": 15
+    },
+    "remote_zip_download_integration_test.dart": {
+      "passed": 18
+    },
+    "remote_zip_service_test.dart": {
+      "passed": 79
+    },
+    "rom_identification_dialog_test.dart": {
+      "passed": 4
+    },
+    "rom_identity_service_test.dart": {
+      "passed": 10
+    },
+    "rom_lookup_test.dart": {
+      "passed": 10
+    },
+    "rom_result_card_widget_test.dart": {
+      "passed": 2
+    },
+    "screenscraper_provider_test.dart": {
+      "passed": 54
+    },
+    "search_provider_test.dart": {
+      "passed": 13
+    },
+    "settings_actions_widget_test.dart": {
+      "passed": 7
+    },
+    "settings_provider_lifecycle_test.dart": {
+      "passed": 29
+    },
+    "skraper_import_service_test.dart": {
+      "passed": 16,
+      "skipped": 1
+    },
+    "skraper_integration_widget_test.dart": {
+      "passed": 16
+    },
+    "skraper_metadata_integration_test.dart": {
+      "passed": 6
+    },
+    "skraper_metadata_provider_test.dart": {
+      "passed": 3
+    },
+    "slate_windows_ui_test.dart": {
+      "passed": 11
+    },
+    "sources_screen_widget_test.dart": {
+      "passed": 3
+    },
+    "sources_service_test.dart": {
+      "passed": 4
+    },
+    "steamgriddb_provider_test.dart": {
+      "passed": 14
+    },
+    "storage_path_audit_test.dart": {
+      "passed": 3,
+      "skipped": 2
+    },
+    "torbox_catalog_proof_test.dart": {
+      "passed": 25
+    },
+    "torbox_collection_zip_test.dart": {
+      "passed": 18
+    },
+    "torbox_file_metadata_test.dart": {
+      "passed": 7
+    },
+    "torbox_provider_test.dart": {
+      "passed": 52
+    },
+    "torbox_recovery_test.dart": {
+      "passed": 16
+    },
+    "torrent_file_selection_proof_test.dart": {
+      "passed": 29
+    },
+    "torrent_magnet_test.dart": {
+      "passed": 8
+    },
+    "torrent_service_test.dart": {
+      "passed": 13
+    },
+    "width_sliver_layout_builder_test.dart": {
+      "passed": 4
+    },
+    "wikipedia_provider_test.dart": {
+      "passed": 17
+    },
+    "windows_notification_service_test.dart": {
+      "passed": 3
+    },
+    "windows_service_parity_test.dart": {
+      "passed": 13
+    },
+    "windows_torrent_engine_test.dart": {
+      "passed": 9
+    },
+    "windows_update_service_test.dart": {
+      "passed": 16
+    },
+    "windows_update_tile_test.dart": {
+      "passed": 5
+    }
+  },
+  "skippedTests": [
+    {
+      "suite": "library_audit_test.dart",
+      "test": "download deletion removes extracted folders but does not follow links",
+      "reason": null
+    },
+    {
+      "suite": "mac_archive_service_test.dart",
+      "test": "macOS archive extraction extracts ZIP data and emits completion progress",
+      "reason": null
+    },
+    {
+      "suite": "mac_archive_service_test.dart",
+      "test": "macOS archive extraction extracts 7z through the native archive runtime",
+      "reason": null
+    },
+    {
+      "suite": "mac_archive_service_test.dart",
+      "test": "macOS archive extraction rejects traversal before writing outside the output folder",
+      "reason": null
+    },
+    {
+      "suite": "mac_archive_service_test.dart",
+      "test": "macOS archive extraction rejects symbolic links in downloaded archives",
+      "reason": null
+    },
+    {
+      "suite": "mac_archive_service_test.dart",
+      "test": "Mac native torrent runtime reports its unsupported feature clearly",
+      "reason": null
+    },
+    {
+      "suite": "skraper_import_service_test.dart",
+      "test": "symlinks cannot escape the source root or artwork store",
+      "reason": "Symlink creation requires Windows privileges."
+    },
+    {
+      "suite": "storage_path_audit_test.dart",
+      "test": "an existing symlink cannot redirect a download onto another file",
+      "reason": null
+    },
+    {
+      "suite": "storage_path_audit_test.dart",
+      "test": "default platform symlinks cannot escape the root but explicit folders can",
+      "reason": null
+    }
+  ],
+  "rawRunSha256": "be29be50024000fc07519e646a0245618466729a127eec320f209b93f0b3e693",
+  "durationMilliseconds": 56797
+}
