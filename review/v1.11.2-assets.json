@@ -1,0 +1,56 @@
+{
+  "version": "1.11.2+31",
+  "status": "prepared locally for review; no public 1.11.2 assets uploaded",
+  "files": [
+    {
+      "name": "AUDIT-AND-VALIDATION.txt",
+      "bytes": 4665,
+      "sha256": "7e00e36ed63e14964711e35e11e4292f7e86eb95994e4b16e47103d7fac5821e"
+    },
+    {
+      "name": "BUILD-SHA256.txt",
+      "bytes": 209,
+      "sha256": "2a3bf63fe34ca9a5e97a893f83eb58bccb1a7cce92b95632e585f595713d41a4"
+    },
+    {
+      "name": "CONTENTS-SHA256.txt",
+      "bytes": 4143,
+      "sha256": "99711d8d37d5f641591a81f1f54eef72d99ebfe1c4fe46be67845b9f35f27425"
+    },
+    {
+      "name": "NOMROM-1.11.2-source-SHA256.txt",
+      "bytes": 91,
+      "sha256": "09569ac2d049f46aaf9874c24acad2e02fcc32540efbc352e1a6ac0e4c32a41a"
+    },
+    {
+      "name": "NOMROM-1.11.2-Source.zip",
+      "bytes": 6887766,
+      "sha256": "a55d3659ca35a33c822b4a094793ae0819e6834ede1597254daf493a57547db5"
+    },
+    {
+      "name": "NOMROM-1.11.2-windows-x64-portable.zip",
+      "bytes": 17037659,
+      "sha256": "775d201c302244fbac8e233cb99ccfdff20310f6bed8967877c1ec504435c5e7"
+    },
+    {
+      "name": "NOMROM-1.11.2-windows-x64-setup.exe",
+      "bytes": 14101954,
+      "sha256": "f4853b6bf9fdb882cb2affcf16bd56cbf012a9b4b405ee58005bc5a08df0be42"
+    },
+    {
+      "name": "NOMROM-1.11.2-windows-x64-SHA256.txt",
+      "bytes": 207,
+      "sha256": "72d13cc9637ca661232db4ee94e590c82e3f4aa9b52d64df47951e799603e914"
+    },
+    {
+      "name": "REPACKAGING-NOTE.txt",
+      "bytes": 514,
+      "sha256": "509ab0b3a7611db6714d905e21246ecfb1eb1d0b1a5d9622f851ffdc016f41b8"
+    },
+    {
+      "name": "windows-stable.json",
+      "bytes": 13038,
+      "sha256": "1f947e2f3cb84f8cdfb2074863caa670625173dea920df3e081bccd2d0eb62ce"
+    }
+  ]
+}

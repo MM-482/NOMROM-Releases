@@ -1,0 +1,1830 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 404ef64cf0faedbdbb0b14c58ac3081b82a5fd9c..8e9c1e5cab90b4912f3420676ec7956aeab843c2 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,7 +1,7 @@
+ # NOMROM Windows continuation
+ 
+ This is the isolated Windows port of NOMROM 1.7.7 for Mac, now version
+-1.11.1+30. Preserve the Mac edition's functionality on Windows. The latest
++1.11.3+32. Preserve the Mac edition's functionality on Windows. The latest
+ request replaces the earlier appearance-replication goal with five fresh,
+ minimal designs and a window whose caption is integrated into the app.
+ The five visible choices are Clarity, Dusk, Graphite, Linen and Studio.
+diff --git a/README.md b/README.md
+index 5128a2640c6c3d6935e439523063cab53965c8e5..3de936ed139dcc0ad085154aa0331ef6cf3ff4a0 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,7 @@
+ # NOMROM for Windows
+ 
+ This is the Windows port in progress, based on NOMROM for Mac 1.7.7, with
+-project version 1.11.1+30. Preserve the Mac edition's functionality while giving
++project version 1.11.3+32. Preserve the Mac edition's functionality while giving
+ Windows five fresh, minimal themes: **Clarity**, **Dusk**, **Graphite**,
+ **Linen** and **Studio**. Clarity is the default. The caption and window controls
+ are integrated into the app's theme, without a separate native titlebar.
+@@ -27,6 +27,15 @@ the chosen provider through retries, and repairs Windows torrent startup and
+ file selection. Earlier verified TorBox matching, selective ZIP retrieval,
+ and Skraper integration are retained alongside the newer Windows engine.
+ 
++Version 1.11.2 repairs Internet Archive email/password sign-in, complete-session
++validation, public-link access and the distinction between service, login and
++item-permission failures.
++
++Version 1.11.3 adds staged torrent destination replacement, pause/cancel guards
++during finalization, and extraction receipts so unrelated same-name files or
++folders cannot make an archive appear already extracted. This is a review
++candidate; test and build results are recorded separately before publication.
++
+ ScreenScraper activation is approved for this release. Run
+ `Build-NOMROM-ScreenScraper.cmd` to enter the issued developer access through
+ hidden local prompts, check application access, and build with ScreenScraper
+diff --git a/lib/services/download_service.dart b/lib/services/download_service.dart
+index 0a1964a9cd6cb3e84f351980cd0d289a975550e1..e121a8b4748f511df58570fa0128d6b2f5e5623e 100644
+--- a/lib/services/download_service.dart
++++ b/lib/services/download_service.dart
+@@ -19,6 +19,7 @@ import '../torrent/torrent_api.g.dart';
+ import 'database_service.dart';
+ import 'debrid_service.dart';
+ import 'debrid/debrid_provider.dart';
++import 'extraction_receipt_store.dart';
+ import 'host_adapter.dart';
+ import 'internet_archive_auth_manager.dart';
+ import 'link_resolver.dart';
+@@ -84,6 +85,9 @@ class DownloadService {
+   _torrentErrorSubs = {};
+   final Map<String, Set<String>> _completedTorrentSources = {};
+   final Map<String, Future<void>> _torrentReleases = {};
++  final Map<String, Object> _torrentRunTokens = {};
++  final Set<Object> _failingTorrentRuns = {};
++  final Future<void> Function(File source, String target) _copyTorrentFile;
+ 
+   final _downloadController = StreamController<DownloadTask>.broadcast();
+   Stream<DownloadTask> get downloadStream => _downloadController.stream;
+@@ -92,6 +96,7 @@ class DownloadService {
+   final Map<String, DownloadTask> _activeTasks = {};
+   final Set<String> _pausedTaskIds = {};
+   final Set<String> _userPausedTaskIds = {};
++  final Set<String> _cancelledTaskIds = {};
+   DateTime? _lastNotificationUpdate;
+   bool _isProcessingQueue = false;
+   bool _queueCheckRequested = false;
+@@ -151,6 +156,8 @@ class DownloadService {
+     Dio? dio,
+     Duration updatePreparationTimeout = const Duration(seconds: 20),
+     Future<void> Function()? ensureSettingsReady,
++    @visibleForTesting Future<void> Function(File source, String target)?
++    copyTorrentFile,
+   }) : _db = db,
+        _ensureSettingsReady = ensureSettingsReady,
+        _romDb = romDb,
+@@ -162,6 +169,7 @@ class DownloadService {
+        _debrid = debrid,
+        _ownsRemoteZipService = remoteZipService == null,
+        _updatePreparationTimeout = updatePreparationTimeout,
++       _copyTorrentFile = copyTorrentFile ?? _copyTorrentFileToStaging,
+        _dio = dio ?? Dio() {
+     _remoteZipService = remoteZipService ?? RemoteZipService();
+     _playlistWriter = PlaylistWriter(
+@@ -189,6 +197,7 @@ class DownloadService {
+         final count = (_runningTaskIds[id] ?? 1) - 1;
+         if (count == 0) {
+           _runningTaskIds.remove(id);
++          _cancelledTaskIds.remove(id);
+           if (!_disposed && !_preparingAppUpdate) unawaited(_processQueue());
+         } else {
+           _runningTaskIds[id] = count;
+@@ -859,6 +868,7 @@ class DownloadService {
+       // the HTTP transfer's own error handler has been entered.
+       if (_disposed ||
+           _preparingAppUpdate ||
++          _cancelledTaskIds.contains(task.id) ||
+           _pausedTaskIds.contains(task.id) ||
+           !_activeTasks.containsKey(task.id)) {
+         return;
+@@ -1092,10 +1102,8 @@ class DownloadService {
+       final file = File(downloadPath);
+       if (_shouldExtract(task.link.filename, task.platform) &&
+           !await file.exists()) {
+-        final extractedTarget = await _findExtractedTarget(
+-          task.platform,
+-          task.link.filename,
+-        );
++        final extractedTarget = await _findExtractedTarget(task);
++        if (_disposed || cancelToken.isCancelled) return;
+         if (extractedTarget != null) {
+           final completed = updatedTask.copyWith(
+             status: DownloadStatus.completed,
+@@ -2174,23 +2182,22 @@ class DownloadService {
+     DownloadTask task,
+     HostAdapter adapter,
+   ) async {
++    final runToken = Object();
++    _torrentRunTokens[task.id] = runToken;
+     bool stopped() =>
+         _disposed ||
+         _preparingAppUpdate ||
++        !identical(_torrentRunTokens[task.id], runToken) ||
++        _failingTorrentRuns.contains(runToken) ||
++        _userPausedTaskIds.contains(task.id) ||
++        _cancelledTaskIds.contains(task.id) ||
+         _pausedTaskIds.contains(task.id) ||
+         !_activeTasks.containsKey(task.id);
+     if (stopped()) return;
+     final infohash = task.link.torrentInfohash;
+     final storedIndex = task.link.torrentFileIndex;
+     if (infohash == null || storedIndex == null) {
+-      final failed = task.copyWith(
+-        status: DownloadStatus.failed,
+-        error: 'Torrent metadata missing on link',
+-      );
+-      _activeTasks.remove(task.id);
+-      await _saveDownload(failed);
+-      _emit(failed);
+-      _processQueue();
++      await _failTorrentTask(task, 'Torrent metadata missing on link', adapter);
+       return;
+     }
+     var fileIndex = storedIndex;
+@@ -2209,10 +2216,7 @@ class DownloadService {
+ 
+     if (_shouldExtract(task.link.filename, task.platform) &&
+         !await destFile.exists()) {
+-      final extractedTarget = await _findExtractedTarget(
+-        task.platform,
+-        task.link.filename,
+-      );
++      final extractedTarget = await _findExtractedTarget(task);
+       if (extractedTarget != null) {
+         existingPath = extractedTarget;
+         alreadyComplete = true;
+@@ -2236,24 +2240,28 @@ class DownloadService {
+           _checkExtractionActive(task);
+           try {
+             final archiveFile = File(destPath);
+-            if (await archiveFile.exists()) {
+-              await archiveFile.delete();
+-            }
++            final archiveExists = await archiveFile.exists();
++            if (stopped()) return;
++            if (archiveExists) await archiveFile.delete();
+           } catch (_) {}
+         } catch (error) {
++          if (stopped()) return;
+           if (await _handleExtractionInterruption(task)) return;
+           await _failTask(task, _archiveExtractionError(error));
+           return;
+         }
+       }
++      if (stopped()) return;
+       final completed = task.copyWith(
+         status: DownloadStatus.completed,
+         progress: 1.0,
+         filePath: finalPath,
+         completedAt: DateTime.now(),
+       );
+-      _activeTasks.remove(task.id);
+       await _saveDownload(completed);
++      if (stopped()) return;
++      _activeTasks.remove(task.id);
++      _torrentRunTokens.remove(task.id);
+       _emit(completed);
+       await _maybeWritePlaylist(completed);
+       _processQueue();
+@@ -2388,7 +2396,7 @@ class DownloadService {
+               if (isComplete) {
+                 await _torrentProgressSubs.remove(task.id)?.cancel();
+                 await _torrentErrorSubs.remove(task.id)?.cancel();
+-                await _finishTorrentTask(current, file);
++                await _finishTorrentTask(current, file, runToken);
+               }
+             }).catchError((Object error) {
+               debugPrint('Could not process torrent progress: $error');
+@@ -2435,29 +2443,42 @@ class DownloadService {
+       );
+     } catch (e) {
+       if (stopped()) return;
+-      await _torrentProgressSubs.remove(task.id)?.cancel();
+-      await _torrentErrorSubs.remove(task.id)?.cancel();
+-      final failed = current.copyWith(
+-        status: DownloadStatus.failed,
+-        error: 'Torrent failed to start: $e',
+-      );
+-      _activeTasks.remove(task.id);
+-      await _saveDownload(failed);
+-      _emit(failed);
+-      _processQueue();
++      await _failTorrentTask(current, 'Torrent failed to start: $e', adapter);
+       return;
+     }
+   }
+ 
+-  Future<void> _finishTorrentTask(DownloadTask task, TorrentFile file) async {
++  void _checkTorrentActive(DownloadTask task, Object runToken) {
++    if (_disposed ||
++        !identical(_torrentRunTokens[task.id], runToken) ||
++        _failingTorrentRuns.contains(runToken) ||
++        !_activeTasks.containsKey(task.id) ||
++        _userPausedTaskIds.contains(task.id) ||
++        _cancelledTaskIds.contains(task.id) ||
++        _pausedTaskIds.contains(task.id)) {
++      throw const _TorrentFinalizationInterrupted();
++    }
++  }
++
++  Future<void> _finishTorrentTask(
++    DownloadTask task,
++    TorrentFile file,
++    Object runToken,
++  ) async {
+     if (_finishingTasks.contains(task.id)) return;
+     _finishingTasks.add(task.id);
+     var completed = false;
+     try {
+-      completed = await _finishTorrentTaskBody(task, file);
++      completed = await _finishTorrentTaskBody(task, file, runToken);
++    } on _TorrentFinalizationInterrupted {
++      // Pause/cancel/dispose owns the final status. A stale callback cannot
++      // revive the task or publish completion for a later run of the same ID.
+     } finally {
+       _finishingTasks.remove(task.id);
+-      _activeTasks.remove(task.id);
++      if (identical(_torrentRunTokens[task.id], runToken)) {
++        _activeTasks.remove(task.id);
++        _torrentRunTokens.remove(task.id);
++      }
+       if (completed) await _releaseCompletedTorrent(task);
+       await _updateNotifications();
+       unawaited(_processQueue());
+@@ -2467,8 +2488,12 @@ class DownloadService {
+   Future<bool> _finishTorrentTaskBody(
+     DownloadTask task,
+     TorrentFile file,
++    Object runToken,
+   ) async {
++    void checkActive() => _checkTorrentActive(task, runToken);
++    checkActive();
+     final torrentSavePath = await _torrentSavePath();
++    checkActive();
+     if (torrentSavePath == null) {
+       await _failTorrentTask(
+         task,
+@@ -2477,7 +2502,10 @@ class DownloadService {
+       return false;
+     }
+     final source = File(p.join(torrentSavePath, file.path));
+-    if (!p.isWithin(torrentSavePath, source.path) || !await source.exists()) {
++    final sourceExists =
++        p.isWithin(torrentSavePath, source.path) && await source.exists();
++    checkActive();
++    if (!sourceExists) {
+       await _failTorrentTask(
+         task,
+         'The torrent reported completion but its downloaded file is missing. Retry this download.',
+@@ -2507,27 +2535,20 @@ class DownloadService {
+       task.platform,
+       task.link.filename,
+     );
++    checkActive();
+     try {
+-      final destFile = File(dest);
+-      if (await destFile.exists()) await destFile.delete();
+-      await source.copy(dest);
+-    } catch (_) {
++      await _saveTorrentFile(source, dest, file.length, checkActive);
++      checkActive();
++    } on _TorrentFinalizationInterrupted {
++      rethrow;
++    } catch (error) {
++      checkActive();
+       // Keep the verified staging file available for a later retry.
+       await _failTorrentTask(
+         task,
+-        'Could not save the downloaded file. Check the destination folder and available space, then retry.',
+-      );
+-      return false;
+-    }
+-
+-    final copiedLength = await File(dest).length();
+-    if (file.length > 0 && copiedLength != file.length) {
+-      try {
+-        await File(dest).delete();
+-      } catch (_) {}
+-      await _failTorrentTask(
+-        task,
+-        'Torrent data incomplete ($copiedLength of ${file.length} bytes)',
++        error is _TorrentSaveFailure
++            ? error.message
++            : 'Could not save the downloaded file. Check the destination folder and available space, then retry. Existing destination files were preserved.',
+       );
+       return false;
+     }
+@@ -2543,12 +2564,15 @@ class DownloadService {
+       _activeTasks[task.id] = extracting;
+       _emit(extracting);
+       await _saveDownload(extracting);
++      checkActive();
+ 
+       try {
+         finalPath = await _extractTaskArchive(extracting, dest);
+-        _checkExtractionActive(extracting);
++        checkActive();
+         try {
+-          if (await File(dest).exists()) await File(dest).delete();
++          final archiveExists = await File(dest).exists();
++          checkActive();
++          if (archiveExists) await File(dest).delete();
+         } catch (_) {}
+       } catch (error) {
+         if (await _handleExtractionInterruption(extracting)) return false;
+@@ -2558,6 +2582,7 @@ class DownloadService {
+       }
+     }
+ 
++    checkActive();
+     final completed = task.copyWith(
+       status: DownloadStatus.completed,
+       progress: 1.0,
+@@ -2567,15 +2592,107 @@ class DownloadService {
+       completedAt: DateTime.now(),
+     );
+     await _torrentProgressSubs.remove(task.id)?.cancel();
++    checkActive();
+     await _torrentErrorSubs.remove(task.id)?.cancel();
++    checkActive();
+     final infohash = task.link.torrentInfohash!.toLowerCase();
+-    (_completedTorrentSources[infohash] ??= {}).add(source.path);
+     await _saveDownload(completed);
++    checkActive();
++    (_completedTorrentSources[infohash] ??= {}).add(source.path);
++    _activeTasks.remove(task.id);
+     _emit(completed);
+     await _maybeWritePlaylist(completed);
+     return true;
+   }
+ 
++  Future<void> _saveTorrentFile(
++    File source,
++    String destination,
++    int expectedLength,
++    void Function() checkActive,
++  ) async {
++    Directory? staging;
++    var preserveStaging = false;
++    try {
++      staging = await Directory(
++        p.dirname(destination),
++      ).createTemp('.nomrom-torrent-');
++      checkActive();
++      final staged = File(p.join(staging.path, 'download'));
++      await _copyTorrentFile(source, staged.path);
++      checkActive();
++      final copiedLength = await staged.length();
++      checkActive();
++      if (expectedLength > 0 && copiedLength != expectedLength) {
++        throw _TorrentSaveFailure(
++          'Torrent data incomplete ($copiedLength of $expectedLength bytes). Existing destination files were preserved.',
++        );
++      }
++
++      if (!_publishingExtractionTargets.add(destination)) {
++        throw const _TorrentSaveFailure(
++          'Another download is saving this destination. Retry after it finishes. Existing destination files were preserved.',
++        );
++      }
++      final backup = File(p.join(staging.path, 'previous'));
++      var backedUp = false;
++      try {
++        // Copy/verification can be slow and are asynchronous. Publication is a
++        // short same-volume rename section with no await: pause/cancel cannot
++        // interleave between the final intent check and replacing the file.
++        checkActive();
++        final destinationType = FileSystemEntity.typeSync(
++          destination,
++          followLinks: false,
++        );
++        if (destinationType != FileSystemEntityType.notFound) {
++          if (destinationType != FileSystemEntityType.file) {
++            throw const _TorrentSaveFailure(
++              'The download destination is occupied by a folder or link. Existing files were preserved; rename it or choose another folder.',
++            );
++          }
++          File(destination).renameSync(backup.path);
++          backedUp = true;
++        }
++        try {
++          staged.renameSync(destination);
++        } catch (_) {
++          if (backedUp) {
++            try {
++              backup.renameSync(destination);
++              backedUp = false;
++            } catch (_) {
++              preserveStaging = true;
++              throw _TorrentSaveFailure(
++                'Could not replace the downloaded file. The previous file is preserved at ${backup.path}. Restore it before retrying.',
++              );
++            }
++          }
++          rethrow;
++        }
++        if (backedUp) {
++          try {
++            backup.deleteSync();
++          } catch (_) {
++            // The new destination is complete. Keep an undeletable backup
++            // rather than making successful publication destructive.
++            preserveStaging = true;
++          }
++        }
++      } finally {
++        _publishingExtractionTargets.remove(destination);
++      }
++    } finally {
++      if (staging != null && !preserveStaging) {
++        try {
++          if (await staging.exists()) await staging.delete(recursive: true);
++        } catch (_) {
++          // A unique leftover staging folder is harmless and never reused.
++        }
++      }
++    }
++  }
++
+   Future<void> _releaseCompletedTorrent(DownloadTask task) async {
+     final infohash = task.link.torrentInfohash!.toLowerCase();
+     final shared = _activeTasks.values.any(
+@@ -2627,8 +2744,18 @@ class DownloadService {
+     }
+   }
+ 
+-  Future<bool> _tryFailover(DownloadTask task) async {
+-    if (_preparingAppUpdate || _pausedTaskIds.contains(task.id)) return false;
++  Future<bool> _tryFailover(
++    DownloadTask task, {
++    bool Function()? canContinue,
++  }) async {
++    bool stopped() =>
++        _disposed ||
++        _preparingAppUpdate ||
++        _userPausedTaskIds.contains(task.id) ||
++        _cancelledTaskIds.contains(task.id) ||
++        _pausedTaskIds.contains(task.id) ||
++        (canContinue != null && !canContinue());
++    if (stopped()) return false;
+     final host = task.link.host.trim().toLowerCase();
+     if (task.link.torrentInfohash != null &&
+         (task.link.debridProviderId != null ||
+@@ -2645,15 +2772,17 @@ class DownloadService {
+ 
+     try {
+       final entry = await _romDb.getEntry(task.slug);
+-      if (entry == null) return false;
++      if (stopped() || entry == null) return false;
+ 
+       try {
+         await _ensureSettingsReady?.call();
+       } catch (_) {}
++      if (stopped()) return false;
+       final basePrefs = getLinkResolverPrefs();
+       final debridReady =
+           basePrefs.debridEnabled &&
+           (_debrid == null ? true : await _debrid.isConfigured());
++      if (stopped()) return false;
+       final prefs = LinkResolverPrefs(
+         disabledSourceIds: basePrefs.disabledSourceIds,
+         preferredSourceIds: basePrefs.preferredSourceIds,
+@@ -2683,6 +2812,7 @@ class DownloadService {
+         error: null,
+       );
+       await _saveDownload(retryTask);
++      if (stopped()) return false;
+       _emit(retryTask);
+       return true;
+     } catch (_) {
+@@ -2695,16 +2825,37 @@ class DownloadService {
+     String error, [
+     HostAdapter? adapter,
+   ]) async {
+-    _activeTasks.remove(task.id);
+-    await _stopTorrentSubscription(task);
+-    final failedOver = await _tryFailover(task);
+-    if (!failedOver) {
+-      final failed = task.copyWith(status: DownloadStatus.failed, error: error);
+-      await _saveDownload(failed);
+-      _emit(failed);
+-      adapter?.onAuthFailure(task.link);
++    final runToken = _torrentRunTokens[task.id];
++    bool stopped() =>
++        _disposed ||
++        !_activeTasks.containsKey(task.id) ||
++        _userPausedTaskIds.contains(task.id) ||
++        _cancelledTaskIds.contains(task.id) ||
++        _pausedTaskIds.contains(task.id) ||
++        !identical(_torrentRunTokens[task.id], runToken);
++    if (runToken == null || stopped() || !_failingTorrentRuns.add(runToken)) {
++      return;
++    }
++    try {
++      // The task stays active for pause/cancel persistence, but startup and
++      // progress for this run must stop immediately while shutdown awaits.
++      await _stopTorrentSubscription(task);
++      if (stopped()) return;
++      final failedOver = await _tryFailover(task, canContinue: () => !stopped());
++      if (stopped()) return;
++      if (!failedOver) {
++        final failed = task.copyWith(status: DownloadStatus.failed, error: error);
++        await _saveDownload(failed);
++        if (stopped()) return;
++        _emit(failed);
++        adapter?.onAuthFailure(task.link);
++      }
++      _activeTasks.remove(task.id);
++      _torrentRunTokens.remove(task.id);
++      _processQueue();
++    } finally {
++      _failingTorrentRuns.remove(runToken);
+     }
+-    _processQueue();
+   }
+ 
+   Future<String?> _torrentSavePath() async {
+@@ -2839,6 +2990,7 @@ class DownloadService {
+     _requireQueueMutable(id: id);
+     // Keep user intent while runtime cancellation and final writes settle.
+     _userPausedTaskIds.add(id);
++    _torrentRunTokens.remove(id);
+     return _trackOperation(() => _pauseDownload(id));
+   }
+ 
+@@ -2900,6 +3052,8 @@ class DownloadService {
+   Future<void> cancelDownload(String id) {
+     _requireQueueMutable(id: id);
+     _sourceChangeRequests.remove(id);
++    _cancelledTaskIds.add(id);
++    _torrentRunTokens.remove(id);
+     // Keep a source change's pending write out of the queue until deletion
+     // finishes, even when cancellation interrupts its final persistence step.
+     return _trackTaskWork(id, () => _cancelDownload(id));
+@@ -3237,33 +3391,10 @@ class DownloadService {
+     'ng',
+   };
+ 
+-  Future<String?> _findExtractedTarget(String platform, String filename) async {
++  Future<String?> _findExtractedTarget(DownloadTask task) async {
+     try {
+-      final platformDir = await _storage.getPlatformDirectory(platform);
+-      if (!await platformDir.exists()) return null;
+-      final baseName = filename
+-          .replaceAll(RegExp(r'\.(zip|7z)$', caseSensitive: false), '')
+-          .trim();
+-      if (baseName.isEmpty) return null;
+-      final baseLower = baseName.toLowerCase();
+-      await for (final entity in platformDir.list(followLinks: false)) {
+-        final name = p.basename(entity.path);
+-        if (name.startsWith('.extract-')) continue;
+-        if (entity is File) {
+-          final lowerName = name.toLowerCase();
+-          if (lowerName.endsWith('.zip') || lowerName.endsWith('.7z')) continue;
+-          if (p.basenameWithoutExtension(entity.path).toLowerCase() ==
+-                  baseLower &&
+-              await entity.length() > 0) {
+-            return entity.path;
+-          }
+-        } else if (entity is Directory) {
+-          if (name.toLowerCase() == baseLower &&
+-              !await entity.list(followLinks: false).isEmpty) {
+-            return entity.path;
+-          }
+-        }
+-      }
++      final platformDir = await _storage.getPlatformDirectory(task.platform);
++      return await const ExtractionReceiptStore().find(task, platformDir);
+     } catch (_) {}
+     return null;
+   }
+@@ -3278,7 +3409,11 @@ class DownloadService {
+   void _checkExtractionActive(DownloadTask task) {
+     final isTracked =
+         _activeTasks.containsKey(task.id) || _finishingTasks.contains(task.id);
+-    if (_disposed || !isTracked || _pausedTaskIds.contains(task.id)) {
++    if (_disposed ||
++        !isTracked ||
++        _userPausedTaskIds.contains(task.id) ||
++        _cancelledTaskIds.contains(task.id) ||
++        _pausedTaskIds.contains(task.id)) {
+       throw const _ExtractionInterrupted();
+     }
+   }
+@@ -3305,11 +3440,28 @@ class DownloadService {
+     _checkExtractionActive(task);
+     _extractingArchives[task.id] = archivePath;
+     try {
+-      return await _extractArchive(
++      final extractedPath = await _extractArchive(
+         archivePath,
+         task.platform,
+         canPublish: () => _checkExtractionActive(task),
+       );
++      _checkExtractionActive(task);
++      try {
++        final platformDir = await _storage.getPlatformDirectory(task.platform);
++        _checkExtractionActive(task);
++        await const ExtractionReceiptStore().record(
++          task,
++          platformDir,
++          extractedPath,
++          canPublish: () => _checkExtractionActive(task),
++        );
++      } catch (_) {
++        _checkExtractionActive(task);
++        // Safe extraction still succeeds if its optional reuse receipt cannot
++        // be saved. A later retry will conservatively avoid unproven reuse.
++      }
++      _checkExtractionActive(task);
++      return extractedPath;
+     } finally {
+       if (_extractingArchives[task.id] == archivePath) {
+         _extractingArchives.remove(task.id);
+@@ -3368,8 +3520,9 @@ class DownloadService {
+       }
+       canPublish();
+       // The extraction staging directory is created beside this target, so
+-      // publishing can use a same-volume rename without overwriting old data.
+-      await entity.rename(target);
++      // publication is a short same-volume rename. Do not suspend after the
++      // final activity check: pause/cancel must not overtake publication.
++      entity.renameSync(target);
+     } finally {
+       _publishingExtractionTargets.remove(target);
+     }
+@@ -3395,6 +3548,7 @@ class DownloadService {
+     }
+     _activeCancelTokens.clear();
+     _activeTasks.clear();
++    _torrentRunTokens.clear();
+     for (final subscription in _torrentProgressSubs.values) {
+       unawaited(subscription.cancel());
+     }
+@@ -3448,6 +3602,19 @@ class _ExtractionInterrupted implements Exception {
+   const _ExtractionInterrupted();
+ }
+ 
++class _TorrentFinalizationInterrupted implements Exception {
++  const _TorrentFinalizationInterrupted();
++}
++
++class _TorrentSaveFailure implements Exception {
++  final String message;
++  const _TorrentSaveFailure(this.message);
++}
++
++Future<void> _copyTorrentFileToStaging(File source, String target) async {
++  await source.copy(target);
++}
++
+ String _normTorrentPath(String raw) {
+   var s = raw.trim().replaceAll('\\', '/');
+   if (s.contains('%')) {
+diff --git a/lib/services/extraction_receipt_store.dart b/lib/services/extraction_receipt_store.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..912340597700ff0f61af97f9061c6ae15bb4787e
+--- /dev/null
++++ b/lib/services/extraction_receipt_store.dart
+@@ -0,0 +1,211 @@
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:crypto/crypto.dart';
++import 'package:path/path.dart' as p;
++
++import '../models/models.dart';
++
++/// Remembers only output that this app successfully extracted for this exact
++/// catalog/source identity. A similarly named file is not extraction evidence.
++class ExtractionReceiptStore {
++  const ExtractionReceiptStore();
++
++  String _identity(DownloadTask task) => sha256
++      .convert(
++        utf8.encode(
++          jsonEncode([
++            task.platform,
++            task.slug,
++            task.link.filename,
++            task.link.size,
++            task.link.sourceId,
++            task.link.torrentInfohash?.toLowerCase(),
++            task.link.torrentFilePath,
++          ]),
++        ),
++      )
++      .toString();
++
++  File _receipt(Directory platformDirectory, String identity) =>
++      File(p.join(platformDirectory.path, '.nomrom-extraction-$identity.json'));
++
++  /// Returns a previous output only if its identity, exact file set, lengths
++  /// and modification times still match a receipt created after extraction.
++  Future<String?> find(DownloadTask task, Directory platformDirectory) async {
++    try {
++      final identity = _identity(task);
++      final receipt = _receipt(platformDirectory, identity);
++      if (await FileSystemEntity.type(receipt.path, followLinks: false) !=
++          FileSystemEntityType.file) {
++        return null;
++      }
++      if (await receipt.length() > 8 * 1024 * 1024) return null;
++      final decoded = jsonDecode(await receipt.readAsString());
++      if (decoded is! Map<String, dynamic> ||
++          decoded['version'] != 1 ||
++          decoded['identity'] != identity ||
++          decoded['target'] is! String ||
++          decoded['files'] is! List) {
++        return null;
++      }
++      final target = p.join(
++        platformDirectory.path,
++        decoded['target'] as String,
++      );
++      final snapshot = await _snapshot(platformDirectory, target);
++      if (snapshot == null ||
++          decoded['target'] != snapshot.target ||
++          decoded['kind'] != snapshot.kind ||
++          jsonEncode(decoded['files']) != jsonEncode(snapshot.files)) {
++        return null;
++      }
++      return target;
++    } catch (_) {
++      // A missing, obsolete, unreadable or malformed receipt disables reuse.
++      return null;
++    }
++  }
++
++  /// Receipt failures never invalidate an otherwise successful extraction.
++  /// The caller must recheck task activity when handling an error.
++  Future<void> record(
++    DownloadTask task,
++    Directory platformDirectory,
++    String target, {
++    required void Function() canPublish,
++  }) async {
++    final snapshot = await _snapshot(platformDirectory, target);
++    if (snapshot == null) return;
++    canPublish();
++    final identity = _identity(task);
++    final receipt = _receipt(platformDirectory, identity);
++    if (p.equals(p.absolute(target), p.absolute(receipt.path))) return;
++    final staging = await platformDirectory.createTemp('.nomrom-receipt-');
++    try {
++      final temporary = File(p.join(staging.path, 'receipt.json'));
++      await temporary.writeAsString(
++        jsonEncode({
++          'version': 1,
++          'identity': identity,
++          'target': snapshot.target,
++          'kind': snapshot.kind,
++          'files': snapshot.files,
++        }),
++        flush: true,
++      );
++      final existing = await FileSystemEntity.type(
++        receipt.path,
++        followLinks: false,
++      );
++      if (existing != FileSystemEntityType.notFound &&
++          existing != FileSystemEntityType.file) {
++        return;
++      }
++      if (existing == FileSystemEntityType.file) {
++        try {
++          if (await receipt.length() > 8 * 1024 * 1024) return;
++          final previous = jsonDecode(await receipt.readAsString());
++          if (previous is! Map<String, dynamic> ||
++              previous['version'] != 1 ||
++              previous['identity'] != identity) {
++            return;
++          }
++        } catch (_) {
++          return;
++        }
++      }
++      canPublish();
++      // There is no suspension between the last task check and publishing the
++      // small app-owned receipt. Never remove a user directory or link here.
++      if (existing == FileSystemEntityType.file) receipt.deleteSync();
++      temporary.renameSync(receipt.path);
++    } finally {
++      try {
++        await staging.delete(recursive: true);
++      } catch (_) {}
++    }
++  }
++
++  Future<_ExtractionSnapshot?> _snapshot(
++    Directory platformDirectory,
++    String target,
++  ) async {
++    final root = p.normalize(p.absolute(platformDirectory.path));
++    final path = p.normalize(p.absolute(target));
++    if (!p.isWithin(root, path)) return null;
++    final canonicalRoot = await platformDirectory.resolveSymbolicLinks();
++
++    Future<FileSystemEntityType?> regularType(String candidate) async {
++      final relative = p.relative(candidate, from: root);
++      var current = root;
++      final segments = p.split(relative);
++      for (var index = 0; index < segments.length; index++) {
++        current = p.join(current, segments[index]);
++        final type = await FileSystemEntity.type(current, followLinks: false);
++        if (type != FileSystemEntityType.file &&
++            type != FileSystemEntityType.directory) {
++          return null;
++        }
++        if (index < segments.length - 1 &&
++            type != FileSystemEntityType.directory) {
++          return null;
++        }
++        final canonical = type == FileSystemEntityType.directory
++            ? await Directory(current).resolveSymbolicLinks()
++            : await File(current).resolveSymbolicLinks();
++        if (!p.equals(
++          canonical,
++          p.join(canonicalRoot, p.relative(current, from: root)),
++        )) {
++          return null;
++        }
++        if (index == segments.length - 1) return type;
++      }
++      return null;
++    }
++
++    final targetType = await regularType(path);
++    if (targetType == null) return null;
++    final filePaths = <String>[];
++    if (targetType == FileSystemEntityType.file) {
++      filePaths.add(path);
++    } else {
++      await for (final entity in Directory(
++        path,
++      ).list(recursive: true, followLinks: false)) {
++        final type = await regularType(entity.path);
++        if (type == null) return null;
++        if (type == FileSystemEntityType.file) filePaths.add(entity.path);
++      }
++    }
++    if (filePaths.isEmpty) return null;
++    filePaths.sort();
++    final files = <Map<String, Object>>[];
++    var totalLength = 0;
++    for (final filePath in filePaths) {
++      final stat = await File(filePath).stat();
++      if (stat.type != FileSystemEntityType.file) return null;
++      files.add({
++        'path': p.relative(filePath, from: root).replaceAll('\\', '/'),
++        'length': stat.size,
++        'modified': stat.modified.toUtc().microsecondsSinceEpoch,
++      });
++      totalLength += stat.size;
++    }
++    if (totalLength == 0) return null;
++    return _ExtractionSnapshot(
++      p.relative(path, from: root).replaceAll('\\', '/'),
++      targetType == FileSystemEntityType.file ? 'file' : 'directory',
++      files,
++    );
++  }
++}
++
++class _ExtractionSnapshot {
++  final String target;
++  final String kind;
++  final List<Map<String, Object>> files;
++
++  const _ExtractionSnapshot(this.target, this.kind, this.files);
++}
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 991351507c9b8748dc8043e7d9944e6b742b92ef..b026d6e5e20843e1dbb9011252f430a38e4514fc 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: romgi
+ description: "NOMROM game browser and download library for Windows, macOS and Android"
+ publish_to: 'none'
+-version: 1.11.2+31
++version: 1.11.3+32
+ 
+ environment:
+   sdk: ^3.10.1
+diff --git a/test/download_extraction_reuse_test.dart b/test/download_extraction_reuse_test.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..d1ccae54c3db03c7536530f220bce6c37473c9a8
+--- /dev/null
++++ b/test/download_extraction_reuse_test.dart
+@@ -0,0 +1,201 @@
++import 'dart:io';
++
++import 'package:dio/dio.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:romgi/models/models.dart';
++import 'package:romgi/services/download_service.dart';
++import 'package:romgi/services/host_adapter.dart';
++
++import 'debrid/debrid_test_utils.dart';
++import 'download_integrity_test.dart' as fixtures;
++
++const _hash = 'aabbccddeeff00112233445566778899aabbccdd';
++
++DownloadTask _task(
++  String id, {
++  bool torrent = false,
++  String slug = 'catalog-game',
++}) => DownloadTask(
++  id: id,
++  slug: slug,
++  title: 'Game',
++  platform: 'psx',
++  createdAt: DateTime(2026),
++  link: DownloadLink(
++    name: 'Game',
++    type: 'Game',
++    format: 'zip',
++    url: 'https://host/Game.zip',
++    filename: 'Game.zip',
++    host: 'host',
++    sourceUrl: 'https://host/',
++    sourceId: 'host',
++    size: 4,
++    sizeStr: '4 B',
++    torrentInfohash: torrent ? _hash : null,
++    torrentFileIndex: torrent ? 0 : null,
++    torrentFilePath: torrent ? 'Game.zip' : null,
++  ),
++);
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  late Directory root;
++  late Directory platform;
++  late fixtures.FakeDatabaseService db;
++  late fixtures.RecordingTorrentService torrents;
++  late fixtures.FakeSevenZipService sevenZip;
++  late StubAdapter http;
++  late DownloadService service;
++
++  setUp(() {
++    root = Directory.systemTemp.createTempSync('download-extraction-reuse-');
++    platform = Directory(p.join(root.path, 'roms'))..createSync();
++    Directory(
++      p.join(root.path, 'support', 'torrents'),
++    ).createSync(recursive: true);
++    db = fixtures.FakeDatabaseService();
++    torrents = fixtures.RecordingTorrentService();
++    sevenZip = fixtures.FakeSevenZipService();
++    sevenZip.onExtract = (archive, output) async {
++      File(p.join(output, 'Downloaded.chd')).writeAsStringSync('game bytes');
++      return output;
++    };
++    http = StubAdapter({
++      '*': (_) => ResponseBody.fromString(
++        'data',
++        200,
++        headers: {
++          Headers.contentLengthHeader: ['4'],
++        },
++      ),
++    });
++    service = DownloadService(
++      db: db,
++      romDb: fixtures.FakeRomDatabaseService(),
++      storage: fixtures.FakeStorageService(platform),
++      notifications: fixtures.FakeNotificationService(),
++      adapters: HostAdapterRegistry(),
++      torrents: torrents,
++      sevenZip: sevenZip,
++      dio: Dio()..httpClientAdapter = http,
++    );
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('plugins.flutter.io/path_provider'),
++      (call) async => call.method == 'getApplicationSupportDirectory'
++          ? p.join(root.path, 'support')
++          : root.path,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('flutter_foreground_task/methods'),
++      (call) async => call.method == 'isRunningService' ? false : true,
++    );
++  });
++
++  tearDown(() async {
++    service.dispose();
++    await Future<void>.delayed(const Duration(milliseconds: 100));
++    await torrents.progress.close();
++    await torrents.errors.close();
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('plugins.flutter.io/path_provider'),
++      null,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('flutter_foreground_task/methods'),
++      null,
++    );
++    root.deleteSync(recursive: true);
++  });
++
++  Future<DownloadTask> run(DownloadTask task) {
++    final completed = service.downloadStream
++        .firstWhere(
++          (event) =>
++              event.id == task.id &&
++              (event.status == DownloadStatus.completed ||
++                  event.status == DownloadStatus.failed),
++        )
++        .timeout(const Duration(seconds: 5));
++    db.rows[task.id] = task;
++    db.servePendingQueue = true;
++    service.setMaxConcurrentDownloads(1);
++    return completed;
++  }
++
++  for (final directory in [false, true]) {
++    test(
++      'HTTP does not skip Game.zip for unrelated same-stem ${directory ? 'folder' : 'text file'}',
++      () async {
++        final unrelated = File(
++          p.join(platform.path, directory ? 'Game/notes.txt' : 'Game.txt'),
++        );
++        unrelated.parent.createSync(recursive: true);
++        unrelated.writeAsStringSync('keep this unrelated document');
++        final result = await run(_task('http'));
++        expect(result.status, DownloadStatus.completed);
++        expect(result.filePath, p.join(platform.path, 'Downloaded.chd'));
++        expect(http.calls, hasLength(1));
++        expect(unrelated.readAsStringSync(), 'keep this unrelated document');
++      },
++    );
++  }
++
++  test(
++    'successful production extraction writes provenance that HTTP can reuse',
++    () async {
++      final first = await run(_task('first'));
++      expect(first.status, DownloadStatus.completed);
++      expect(http.calls, hasLength(1));
++      expect(File(p.join(platform.path, 'Game.zip')).existsSync(), isFalse);
++      final second = await run(_task('second'));
++      expect(second.status, DownloadStatus.completed);
++      expect(second.filePath, first.filePath);
++      expect(http.calls, hasLength(1));
++    },
++  );
++
++  test(
++    'a different catalog game cannot reuse an existing extraction receipt',
++    () async {
++      final first = await run(_task('first'));
++      expect(first.status, DownloadStatus.completed);
++      final second = await run(_task('second', slug: 'other-catalog-game'));
++      expect(http.calls, hasLength(2));
++      expect(second.status, DownloadStatus.failed);
++      expect(second.error, contains('already exists'));
++      expect(File(first.filePath!).readAsStringSync(), 'game bytes');
++    },
++  );
++
++  for (final directory in [false, true]) {
++    test(
++      'native torrent starts for unrelated same-stem ${directory ? 'folder' : 'text file'}',
++      () async {
++        final unrelated = File(
++          p.join(platform.path, directory ? 'Game/notes.txt' : 'Game.txt'),
++        );
++        unrelated.parent.createSync(recursive: true);
++        unrelated.writeAsStringSync('not extracted game data');
++        http.routes['*'] = (_) => ResponseBody.fromString('not a torrent', 404);
++        final task = _task('torrent', torrent: true);
++        db.rows[task.id] = task;
++        db.servePendingQueue = true;
++        service.setMaxConcurrentDownloads(1);
++        for (var n = 0; n < 250 && torrents.added.isEmpty; n++) {
++          await Future<void>.delayed(const Duration(milliseconds: 20));
++        }
++        expect(torrents.added, hasLength(1));
++        expect(db.rows[task.id]?.status, DownloadStatus.downloading);
++        expect(unrelated.readAsStringSync(), 'not extracted game data');
++        await service.cancelDownload(task.id);
++      },
++    );
++  }
++}
+diff --git a/test/download_torrent_finalization_test.dart b/test/download_torrent_finalization_test.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..318e37bc3e8e6b8fca4a1317cf5a5eaefea0e3d6
+--- /dev/null
++++ b/test/download_torrent_finalization_test.dart
+@@ -0,0 +1,528 @@
++import 'dart:async';
++import 'dart:io';
++
++import 'package:dio/dio.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:romgi/models/models.dart';
++import 'package:romgi/services/download_service.dart';
++import 'package:romgi/services/host_adapter.dart';
++import 'package:romgi/torrent/torrent_api.g.dart';
++
++import 'debrid/debrid_test_utils.dart';
++import 'download_integrity_test.dart' as fixture;
++
++const _hash = 'aabbccddeeff00112233445566778899aabbccdd';
++const _timeout = Duration(seconds: 5);
++
++Future<void> _waitFor(bool Function() condition) async {
++  final deadline = DateTime.now().add(_timeout);
++  while (!condition()) {
++    if (DateTime.now().isAfter(deadline)) {
++      throw TimeoutException('Torrent finalization did not settle', _timeout);
++    }
++    await Future<void>.delayed(const Duration(milliseconds: 2));
++  }
++}
++
++class _Storage extends fixture.FakeStorageService {
++  _Storage(super.platformDir);
++  bool gateNextPath = false;
++  final pathEntered = Completer<void>();
++  final releasePath = Completer<void>();
++
++  @override
++  Future<String> getDownloadPath(String platform, String filename) async {
++    if (gateNextPath) {
++      gateNextPath = false;
++      pathEntered.complete();
++      await releasePath.future;
++    }
++    return super.getDownloadPath(platform, filename);
++  }
++}
++
++class _Database extends fixture.FakeDatabaseService {
++  bool gateCompletion = false;
++  final completionEntered = Completer<void>();
++  final releaseCompletion = Completer<void>();
++
++  @override
++  Future<void> updateDownload(DownloadTask task) async {
++    if (gateCompletion && task.status == DownloadStatus.completed) {
++      gateCompletion = false;
++      completionEntered.complete();
++      await releaseCompletion.future;
++    }
++    await super.updateDownload(task);
++  }
++}
++
++class _Torrents extends fixture.RecordingTorrentService {
++  bool gateNextCancel = false;
++  final cancelEntered = Completer<void>();
++  final releaseCancel = Completer<void>();
++
++  @override
++  Future<void> cancel(String infohash) async {
++    if (gateNextCancel) {
++      gateNextCancel = false;
++      cancelEntered.complete();
++      await releaseCancel.future;
++    }
++  }
++}
++
++class _Notifications extends fixture.FakeNotificationService {
++  int idleCount = 0;
++  @override
++  Future<void> cancelProgressNotification() async {
++    idleCount++;
++  }
++}
++
++DownloadTask _task({String filename = 'Game.chd'}) => DownloadTask(
++  id: 'task',
++  slug: 'game',
++  title: 'Game',
++  platform: 'psx',
++  createdAt: DateTime(2026),
++  link: DownloadLink(
++    name: 'Game',
++    type: 'Game',
++    format: 'chd',
++    url: 'https://fixture.invalid/Game.chd',
++    filename: filename,
++    host: 'Fixture · Torrent',
++    size: 4,
++    sizeStr: '4 B',
++    sourceUrl: 'https://fixture.invalid/',
++    torrentInfohash: _hash,
++    torrentFileIndex: 0,
++    torrentFilePath: filename,
++  ),
++);
++
++TorrentProgress _complete(DownloadTask task) => TorrentProgress(
++  infohash: _hash,
++  name: 'Game',
++  state: 'downloading',
++  totalSize: 4,
++  bytesDownloaded: 4,
++  downloadRate: 0,
++  uploadRate: 0,
++  peers: 1,
++  seeds: 1,
++  error: '',
++  files: [
++    TorrentFile(
++      index: 0,
++      path: task.link.filename,
++      length: 4,
++      bytesDownloaded: 4,
++      priority: 1,
++    ),
++  ],
++);
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  late Directory root;
++  late Directory platform;
++  late Directory torrentFolder;
++  late _Storage storage;
++  late _Database db;
++  late _Torrents torrents;
++  late _Notifications notifications;
++  late fixture.FakeSevenZipService sevenZip;
++  late DownloadService service;
++  late List<DownloadTask> updates;
++  late StreamSubscription<DownloadTask> events;
++  Future<void> Function(File, String)? copy;
++
++  void makeService() {
++    service = DownloadService(
++      db: db,
++      romDb: fixture.FakeRomDatabaseService(),
++      storage: storage,
++      notifications: notifications,
++      adapters: HostAdapterRegistry(),
++      torrents: torrents,
++      sevenZip: sevenZip,
++      dio: Dio()..httpClientAdapter = StubAdapter({}),
++      copyTorrentFile: copy,
++    );
++    events = service.downloadStream.listen(updates.add);
++  }
++
++  setUp(() async {
++    root = await Directory.systemTemp.createTemp('nomrom-finalization-');
++    platform = await Directory(p.join(root.path, 'roms')).create();
++    torrentFolder = await Directory(
++      p.join(root.path, 'support', 'torrents'),
++    ).create(recursive: true);
++    storage = _Storage(platform);
++    db = _Database()..servePendingQueue = true;
++    torrents = _Torrents();
++    notifications = _Notifications();
++    sevenZip = fixture.FakeSevenZipService();
++    copy = null;
++    updates = [];
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('plugins.flutter.io/path_provider'),
++      (call) async => call.method == 'getApplicationSupportDirectory'
++          ? p.join(root.path, 'support')
++          : root.path,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('flutter_foreground_task/methods'),
++      (call) async => switch (call.method) {
++        'isRunningService' => false,
++        'isIgnoringBatteryOptimizations' ||
++        'startService' ||
++        'stopService' => true,
++        _ => null,
++      },
++    );
++  });
++
++  tearDown(() async {
++    service.dispose();
++    await events.cancel();
++    await torrents.progress.close();
++    await torrents.errors.close();
++    final messenger =
++        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('plugins.flutter.io/path_provider'),
++      null,
++    );
++    messenger.setMockMethodCallHandler(
++      const MethodChannel('flutter_foreground_task/methods'),
++      null,
++    );
++    await root.delete(recursive: true);
++  });
++
++  Future<void> start(DownloadTask task) async {
++    makeService();
++    await File(
++      p.join(torrentFolder.path, task.link.filename),
++    ).writeAsBytes([1, 2, 3, 4]);
++    db.rows[task.id] = task;
++    service.setMaxConcurrentDownloads(1);
++    await _waitFor(() => torrents.added.isNotEmpty);
++  }
++
++  Future<DownloadTask> terminal() => service.downloadStream
++      .firstWhere(
++        (task) =>
++            task.status == DownloadStatus.completed ||
++            task.status == DownloadStatus.failed,
++      )
++      .timeout(_timeout);
++
++  void expectNoCompletion() => expect(
++    updates.where((task) => task.status == DownloadStatus.completed),
++    isEmpty,
++  );
++
++  void expectNoStaging() => expect(
++    platform.listSync().where(
++      (entity) => p.basename(entity.path).startsWith('.nomrom-torrent-'),
++    ),
++    isEmpty,
++  );
++
++  test(
++    'partial copy failure preserves existing destination and staging source',
++    () async {
++      copy = (source, target) async {
++        await File(target).writeAsBytes([1, 2]);
++        throw const FileSystemException('Simulated disk full');
++      };
++      final task = _task();
++      await start(task);
++      final destination = await File(
++        p.join(platform.path, task.link.filename),
++      ).writeAsString('previous library file');
++      final finished = terminal();
++      torrents.progress.add(_complete(task));
++      expect((await finished).status, DownloadStatus.failed);
++      expect(await destination.readAsString(), 'previous library file');
++      expect(
++        await File(
++          p.join(torrentFolder.path, task.link.filename),
++        ).readAsBytes(),
++        [1, 2, 3, 4],
++      );
++      expectNoCompletion();
++      expectNoStaging();
++    },
++  );
++
++  test('short copied file never replaces an existing destination', () async {
++    copy = (source, target) async {
++      await File(target).writeAsBytes([1, 2]);
++    };
++    final task = _task();
++    await start(task);
++    final destination = await File(
++      p.join(platform.path, task.link.filename),
++    ).writeAsString('previous library file');
++    final finished = terminal();
++    torrents.progress.add(_complete(task));
++    final result = await finished;
++    expect(result.status, DownloadStatus.failed);
++    expect(result.error, contains('incomplete'));
++    expect(await destination.readAsString(), 'previous library file');
++    expectNoCompletion();
++    expectNoStaging();
++  });
++
++  test('verified staged copy safely replaces an existing file', () async {
++    final task = _task();
++    await start(task);
++    final destination = await File(
++      p.join(platform.path, task.link.filename),
++    ).writeAsString('previous library file');
++    final finished = terminal();
++    torrents.progress.add(_complete(task));
++    expect((await finished).status, DownloadStatus.completed);
++    expect(await destination.readAsBytes(), [1, 2, 3, 4]);
++    expectNoStaging();
++  });
++
++  for (final action in ['pause', 'cancel', 'dispose']) {
++    test(
++      '$action during destination lookup prevents publication and late status',
++      () async {
++        final task = _task();
++        await start(task);
++        storage.gateNextPath = true;
++        final destination = await File(
++          p.join(platform.path, task.link.filename),
++        ).writeAsString('previous library file');
++        torrents.progress.add(_complete(task));
++        await storage.pathEntered.future.timeout(_timeout);
++        if (action == 'pause') {
++          await service.pauseDownload(task.id);
++        } else if (action == 'cancel') {
++          await service.cancelDownload(task.id);
++        } else {
++          service.dispose();
++        }
++        final before = notifications.idleCount;
++        storage.releasePath.complete();
++        await _waitFor(() => notifications.idleCount > before);
++        expect(await destination.readAsString(), 'previous library file');
++        expectNoCompletion();
++        expectNoStaging();
++        if (action == 'pause') {
++          expect(db.rows[task.id]!.status, DownloadStatus.paused);
++        } else if (action == 'cancel') {
++          expect(db.rows.containsKey(task.id), isFalse);
++        }
++      },
++    );
++  }
++
++  for (final action in ['pause', 'cancel']) {
++    test(
++      '$action during staged copy preserves destination and final user intent',
++      () async {
++        final copying = Completer<void>();
++        final release = Completer<void>();
++        copy = (source, target) async {
++          await File(target).writeAsBytes([1, 2]);
++          copying.complete();
++          await release.future;
++          await source.copy(target);
++        };
++        final task = _task();
++        await start(task);
++        final destination = await File(
++          p.join(platform.path, task.link.filename),
++        ).writeAsString('previous library file');
++        torrents.progress.add(_complete(task));
++        await copying.future.timeout(_timeout);
++        if (action == 'pause') {
++          await service.pauseDownload(task.id);
++        } else {
++          await service.cancelDownload(task.id);
++        }
++        final before = notifications.idleCount;
++        release.complete();
++        await _waitFor(() => notifications.idleCount > before);
++        expect(await destination.readAsString(), 'previous library file');
++        expectNoCompletion();
++        expectNoStaging();
++        expect(
++          db.rows[task.id]?.status,
++          action == 'pause' ? DownloadStatus.paused : isNull,
++        );
++      },
++    );
++
++    test('$action wins over delayed torrent failure shutdown', () async {
++      copy = (source, target) async =>
++          throw const FileSystemException('Disk full');
++      final task = _task();
++      await start(task);
++      torrents.gateNextCancel = true;
++      torrents.progress.add(_complete(task));
++      await torrents.cancelEntered.future.timeout(_timeout);
++      if (action == 'pause') {
++        await service.pauseDownload(task.id);
++      } else {
++        await service.cancelDownload(task.id);
++      }
++      final before = notifications.idleCount;
++      torrents.releaseCancel.complete();
++      await _waitFor(() => notifications.idleCount > before);
++      expect(
++        updates.where((task) => task.status == DownloadStatus.failed),
++        isEmpty,
++      );
++      expectNoCompletion();
++      expect(
++        db.rows[task.id]?.status,
++        action == 'pause' ? DownloadStatus.paused : isNull,
++      );
++    });
++
++    test('$action wins over an in-flight completion database write', () async {
++      final task = _task();
++      await start(task);
++      db.gateCompletion = true;
++      torrents.progress.add(_complete(task));
++      await db.completionEntered.future.timeout(_timeout);
++      final intent = action == 'pause'
++          ? service.pauseDownload(task.id)
++          : service.cancelDownload(task.id);
++      db.releaseCompletion.complete();
++      await intent;
++      await _waitFor(() => notifications.idleCount > 0);
++      expectNoCompletion();
++      expect(
++        db.rows[task.id]?.status,
++        action == 'pause' ? DownloadStatus.paused : isNull,
++      );
++    });
++  }
++
++  test('rejected app update cannot strand an active finalization', () async {
++    final copying = Completer<void>();
++    final release = Completer<void>();
++    copy = (source, target) async {
++      copying.complete();
++      await release.future;
++      await source.copy(target);
++    };
++    final task = _task();
++    await start(task);
++    final finished = terminal();
++    torrents.progress.add(_complete(task));
++    await copying.future.timeout(_timeout);
++    await expectLater(service.prepareForAppUpdate(), throwsStateError);
++    release.complete();
++    expect((await finished).status, DownloadStatus.completed);
++    expect(
++      await File(p.join(platform.path, task.link.filename)).readAsBytes(),
++      [1, 2, 3, 4],
++    );
++  });
++
++  test(
++    'immediate pause and resume cannot let the old finalizer finish the new run',
++    () async {
++      final copying = Completer<void>();
++      final release = Completer<void>();
++      var copies = 0;
++      copy = (source, target) async {
++        if (++copies == 1) {
++          copying.complete();
++          await release.future;
++        }
++        await source.copy(target);
++      };
++      final task = _task();
++      await start(task);
++      final destination = await File(
++        p.join(platform.path, task.link.filename),
++      ).writeAsString('previous library file');
++      torrents.progress.add(_complete(task));
++      await copying.future.timeout(_timeout);
++      await service.pauseDownload(task.id);
++      await service.resumeDownload(task.id);
++      release.complete();
++      await _waitFor(() => torrents.added.length == 2);
++      expectNoCompletion();
++      expect(db.rows[task.id]!.status, DownloadStatus.downloading);
++      expect(await destination.readAsString(), 'previous library file');
++      final finished = terminal();
++      torrents.progress.add(_complete(task));
++      expect((await finished).status, DownloadStatus.completed);
++      expect(copies, 2);
++      expect(await destination.readAsBytes(), [1, 2, 3, 4]);
++    },
++  );
++
++  for (final action in ['pause', 'cancel']) {
++    test(
++      '$action during reuse of an existing archive prevents late extraction completion',
++      () async {
++        final extracting = Completer<void>();
++        final release = Completer<void>();
++        final extractionReturned = Completer<void>();
++        sevenZip.onExtract = (archivePath, outputDir) async {
++          extracting.complete();
++          await release.future;
++          await File(p.join(outputDir, 'Game.chd')).writeAsBytes([9, 8, 7]);
++          extractionReturned.complete();
++          return outputDir;
++        };
++        final task = _task(filename: 'Game.zip');
++        final archive = await File(
++          p.join(platform.path, task.link.filename),
++        ).writeAsBytes([1, 2, 3, 4]);
++        makeService();
++        db.rows[task.id] = task;
++        service.setMaxConcurrentDownloads(1);
++        await extracting.future.timeout(_timeout);
++        if (action == 'pause') {
++          await service.pauseDownload(task.id);
++        } else {
++          await service.cancelDownload(task.id);
++        }
++        release.complete();
++        await extractionReturned.future.timeout(_timeout);
++        await _waitFor(
++          () => !platform.listSync().any(
++            (entry) => p.basename(entry.path).startsWith('.extract-'),
++          ),
++        );
++        expect(await archive.readAsBytes(), [1, 2, 3, 4]);
++        expect(await File(p.join(platform.path, 'Game.chd')).exists(), isFalse);
++        expectNoCompletion();
++        expect(
++          updates.where((task) => task.status == DownloadStatus.failed),
++          isEmpty,
++        );
++        expect(
++          db.rows[task.id]?.status,
++          action == 'pause' ? DownloadStatus.paused : isNull,
++        );
++        expect(
++          platform.listSync().where(
++            (entry) => p.basename(entry.path).startsWith('.extract-'),
++          ),
++          isEmpty,
++        );
++      },
++    );
++  }
++}
+diff --git a/test/extraction_receipt_test.dart b/test/extraction_receipt_test.dart
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d8163c67b7586b108096d186f4ca0dad0f94ce7
+--- /dev/null
++++ b/test/extraction_receipt_test.dart
+@@ -0,0 +1,164 @@
++import 'dart:convert';
++import 'dart:io';
++
++import 'package:flutter_test/flutter_test.dart';
++import 'package:path/path.dart' as p;
++import 'package:romgi/models/models.dart';
++import 'package:romgi/services/extraction_receipt_store.dart';
++
++DownloadTask _task({
++  String slug = 'catalog-game-usa',
++  String platform = 'psx',
++  int size = 100,
++}) => DownloadTask(
++  id: 'task',
++  slug: slug,
++  title: 'Game',
++  platform: platform,
++  createdAt: DateTime(2026),
++  link: DownloadLink(
++    name: 'Game',
++    type: 'Game',
++    format: 'zip',
++    url: 'https://host/Game.zip?secret=never-store-this',
++    filename: 'Game.zip',
++    host: 'host',
++    sourceId: 'test-source',
++    sourceUrl: 'https://host/?key=never-store-this',
++    size: size,
++    sizeStr: '$size B',
++  ),
++);
++
++void main() {
++  const store = ExtractionReceiptStore();
++  late Directory root;
++
++  setUp(
++    () => root = Directory.systemTemp.createTempSync('extraction-receipt-'),
++  );
++  tearDown(() => root.deleteSync(recursive: true));
++
++  File file(String relative, [String content = 'verified extracted output']) {
++    final output = File(p.join(root.path, relative));
++    output.parent.createSync(recursive: true);
++    return output..writeAsStringSync(content);
++  }
++
++  Future<void> record(DownloadTask task, String target) =>
++      store.record(task, root, target, canPublish: () {});
++
++  test(
++    'a matching supported file without extraction provenance is not reused',
++    () async {
++      file('Game.chd');
++      expect(await store.find(_task(), root), isNull);
++    },
++  );
++
++  test(
++    'recorded file output is reusable without persisting source credentials',
++    () async {
++      final output = file('Downloaded.chd');
++      await record(_task(), output.path);
++      expect(await store.find(_task(), root), output.path);
++      final receipt = root.listSync().whereType<File>().singleWhere(
++        (entry) => p.basename(entry.path).startsWith('.nomrom-extraction-'),
++      );
++      final text = receipt.readAsStringSync();
++      expect(text, isNot(contains('never-store-this')));
++      expect(text, isNot(contains('https://')));
++    },
++  );
++
++  test('recorded directory requires its complete nested output set', () async {
++    final target = Directory(p.join(root.path, 'Game'))..createSync();
++    file('Game/discs/track.bin');
++    file('Game/Game.cue', 'FILE discs/track.bin BINARY');
++    await record(_task(), target.path);
++    expect(await store.find(_task(), root), target.path);
++    file('Game/unrelated.txt', 'added after extraction');
++    expect(await store.find(_task(), root), isNull);
++  });
++
++  for (final mutation in ['delete', 'replace', 'truncate']) {
++    test('$mutation of recorded output invalidates extraction reuse', () async {
++      final output = file('Game.chd');
++      await record(_task(), output.path);
++      if (mutation == 'delete') {
++        output.deleteSync();
++      } else if (mutation == 'replace') {
++        final original = output.statSync();
++        output.deleteSync();
++        file('Game.chd', 'x' * original.size);
++        output.setLastModifiedSync(
++          original.modified.add(const Duration(seconds: 1)),
++        );
++      } else {
++        output.writeAsStringSync('');
++      }
++      expect(await store.find(_task(), root), isNull);
++    });
++  }
++
++  test('catalog, system and archive identity cannot share a receipt', () async {
++    final output = file('Game.chd');
++    await record(_task(), output.path);
++    expect(await store.find(_task(slug: 'different-game'), root), isNull);
++    expect(await store.find(_task(platform: 'ps2'), root), isNull);
++    expect(await store.find(_task(size: 101), root), isNull);
++  });
++
++  test(
++    'modified receipt cannot authorize a target outside the platform folder',
++    () async {
++      final output = file('Game.chd');
++      await record(_task(), output.path);
++      final receipt = root.listSync().whereType<File>().singleWhere(
++        (entry) => p.basename(entry.path).startsWith('.nomrom-extraction-'),
++      );
++      final data =
++          jsonDecode(receipt.readAsStringSync()) as Map<String, dynamic>;
++      data['target'] = '../unrelated.chd';
++      receipt.writeAsStringSync(jsonEncode(data));
++      expect(await store.find(_task(), root), isNull);
++    },
++  );
++
++  test(
++    'receipt publication preserves unrelated colliding metadata files',
++    () async {
++      final output = file('Game.chd');
++      await record(_task(), output.path);
++      final receipt = root.listSync().whereType<File>().singleWhere(
++        (entry) => p.basename(entry.path).startsWith('.nomrom-extraction-'),
++      );
++      receipt.writeAsStringSync('unrelated user data');
++      await record(_task(), output.path);
++      expect(receipt.readAsStringSync(), 'unrelated user data');
++      expect(await store.find(_task(), root), isNull);
++    },
++  );
++
++  test(
++    'a cancellation at receipt publication leaves no reusable receipt',
++    () async {
++      final output = file('Game.chd');
++      var checks = 0;
++      await expectLater(
++        store.record(
++          _task(),
++          root,
++          output.path,
++          canPublish: () {
++            if (++checks == 2) throw StateError('cancelled');
++          },
++        ),
++        throwsStateError,
++      );
++      expect(output.existsSync(), isTrue);
++      expect(await store.find(_task(), root), isNull);
++      expect(root.listSync().whereType<Directory>(), isEmpty);
++    },
++  );
++}
