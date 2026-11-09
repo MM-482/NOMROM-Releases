@@ -6,15 +6,19 @@ Explore **50 systems and arcade collections** in one Windows app—from NES, SNE
 
 **110,000+ grouped game listings · Curated Top 100 & Top 250 · Full game covers · Five themes**
 
-> **1.11.2 review candidate (build 31).** This proposed page covers the attached November 9 build. The public download remains **1.10.2** while this update is being reviewed. [Read the candidate release notes](release-notes/v1.11.2.md).
+> **1.11.3 review candidate (build 32).** This proposed page replaces the 1.11.2 candidate with the tested download-safety update. The public download remains **1.10.2** while this update is being reviewed. [Read the candidate release notes](release-notes/v1.11.3.md).
 
 [Download for Windows](https://github.com/MM-482/NOMROM-Releases/releases/latest) · [See the full game list](https://raw.githubusercontent.com/MM-482/NOMROM-Releases/main/NOMROM-Game-Catalog.csv) · [Release notes](https://github.com/MM-482/NOMROM-Releases/releases)
 
-![NOMROM 1.11.2 — production Browse widgets rendered with sample catalog data](github-preview-assets/v1.11.2/preview-browse-clarity.png)
+![NOMROM 1.11.3 — production Browse widgets rendered with sample catalog data](github-preview-assets/v1.11.3/preview-browse-clarity.png)
 
-## What is included in 1.11.2
+## What is included in 1.11.3
 
-The candidate combines the Internet Archive repair with the download and local metadata work added since the public 1.10.2 release:
+The candidate fixes the three download findings from the 1.11.2 review and includes the Internet Archive repair and other work added since public 1.10.2:
+
+- **Preserve existing files when a torrent save fails.** Copy and verify the new data in a unique staging folder, then replace the destination with rollback protection. A failed or short copy leaves the original file intact.
+- **Respect pause and cancel while saving.** Each torrent run has its own identity. Checks after awaited work and immediately before publication prevent late callbacks from completing a paused/cancelled task or overriding a newer run.
+- **Verify previous extractions.** Reuse requires an app-created receipt for the exact game, system, archive and source, with unchanged output files. An unrelated same-name document or folder cannot skip a download. Existing content remains protected by extraction collision checks.
 
 - **Internet Archive sign-in.** Email and password are the default on Windows, with API keys kept in a separate mode. Sign-in uses Archive's JSON login protocol, validates the complete returned session before saving, and preserves an existing saved session if a replacement cannot be saved.
 - **Clearer Archive download errors.** Public files can be attempted without an unnecessary login prompt. Service errors, rejected sessions and item permissions have separate handling. Credentials are restricted to verified HTTPS Archive destinations, including redirects and metadata mirrors.
@@ -23,7 +27,7 @@ The candidate combines the Internet Archive repair with the download and local m
 - **Local Skraper imports.** Preview a `gamelist.xml`, choose its system and local artwork folder, and import game details and images. Covers and screenshots retain their separate roles. Imported metadata works independently of a live ScreenScraper account.
 - **Identify a local ROM.** Compute CRC32, MD5 and SHA-1 for one file locally. An optional, explicit ScreenScraper lookup can use those identifiers when the build and personal account are configured.
 
-The package's validation record reports a Windows x64 release build and **122 passing focused tests** for the Archive repair. That record does not establish a successful live account login, a protected download, the complete test suite, or a completed upgrade. [See validation and remaining issues](release-notes/v1.11.2.md#validation-and-remaining-work).
+**Fresh validation: 1,395 tests passed, zero failed and nine existing platform/privilege checks skipped. All 32 new download-safety regression tests passed.** Whole-project analysis found no issues, and the rebuilt Windows x64 installer/portable packages passed verification. The [1.11.3 validation record](review/v1.11.3-validation.md) includes the exact results and local build-tool workaround. The [candidate notes](release-notes/v1.11.3.md) explain the three fixes and include the source patch. Live account sign-in, protected downloads, external service transfers and an in-place upgrade are separate checks.
 
 ![NOMROM catalog highlights — twelve real game covers, labeled by system](github-preview-assets/catalog-highlights.png)
 
@@ -45,7 +49,7 @@ Wondering whether NOMROM has Mario, Pokémon, Halo or Call of Duty? These are ex
 | **Persona** | Persona 3 Portable — PSP; Persona 4 Golden — PlayStation Vita |
 | **Arcade classics** | Metal Slug, Super Street Fighter II Turbo, Street Fighter Alpha 2 and more across the arcade collections |
 
-These are catalog listings, with source access varying by edition. **Super Mario Bros., World and 64 list torrent sources; Call of Duty 4 has direct-source entries for PS3 and Xbox 360, while its DS edition lists torrent sources.** In the published 1.10.2 build, torrent entries require a compatible configured debrid service. The 1.11.2 candidate adds a Windows native torrent route. A listed source does not establish present access or playability.
+These are catalog listings, with source access varying by edition. **Super Mario Bros., World and 64 list torrent sources; Call of Duty 4 has direct-source entries for PS3 and Xbox 360, while its DS edition lists torrent sources.** In the published 1.10.2 build, torrent entries require a compatible configured debrid service. The 1.11.3 candidate adds a Windows native torrent route. A listed source does not establish present access or playability.
 
 ## All 50 systems and collections
 
@@ -161,7 +165,7 @@ Want to check a specific game before installing? These downloadable CSVs describ
 
 ## How downloads work on Windows
 
-**35 system catalogs in the published snapshot include direct download sources.** The other **15 list torrent game sources**. In the public **1.10.2** build, those torrent entries need a compatible configured **TorBox or Real-Debrid** account. The **1.11.2 candidate** adds a Windows native torrent engine alongside explicit debrid provider choices. A debrid service resolves a supported source into a direct download; native torrents depend on available peers and metadata. Source support and availability still apply.
+**35 system catalogs in the published snapshot include direct download sources.** The other **15 list torrent game sources**. In the public **1.10.2** build, those torrent entries need a compatible configured **TorBox or Real-Debrid** account. The **1.11.3 candidate** adds a Windows native torrent engine alongside explicit debrid provider choices. A debrid service resolves a supported source into a direct download; native torrents depend on available peers and metadata. Source support and availability still apply.
 
 *Direct sources listed* means the catalog contains HTTP links; it is not a live access check. **†Torrent sources** means the catalog uses torrents for those entries, with transport options depending on the app version. The downloadable system CSV retains its original 1.10.2-era source labels. A system with direct sources can still contain individual editions that need another source or an account. Pick your game, region and available source in NOMROM.
 
@@ -239,13 +243,13 @@ and region; a game without matching box art shows a placeholder.
 | **Linen** | Warm ivory and earthy accents, with catalog details. |
 | **Studio** | Slate and amber, with a compact file workspace. |
 
-The 1.11.2 previews render the production Windows widgets with a sample catalog and empty accounts/downloads. They are labeled rendered UI previews, not screenshots of a live signed-in session. They do not establish successful sign-in or completed transfers.
+The 1.11.3 previews render the production Windows widgets with a sample catalog and empty accounts/downloads. They are labeled rendered UI previews, not screenshots of a live signed-in session. They do not establish successful sign-in or completed transfers.
 
-![NOMROM 1.11.2 Downloads — production widgets rendered with an empty queue](github-preview-assets/v1.11.2/preview-downloads-clarity.png)
+![NOMROM 1.11.3 Downloads — production widgets rendered with an empty queue](github-preview-assets/v1.11.3/preview-downloads-clarity.png)
 
-![NOMROM 1.11.2 Settings — production widgets rendered with empty accounts](github-preview-assets/v1.11.2/preview-settings-clarity.png)
+![NOMROM 1.11.3 Settings — production widgets rendered with empty accounts](github-preview-assets/v1.11.3/preview-settings-clarity.png)
 
-The five theme previews below are retained from the 1.10.2 review. They render production widgets with controlled review data and real catalog covers; they are not installed-app screenshots and may differ from the 1.11.2 interface.
+The five theme previews below are retained from the 1.10.2 review. They render production widgets with controlled review data and real catalog covers; they are not installed-app screenshots and may differ from the 1.11.3 interface.
 
 ![Clarity — offscreen production UI with review data](github-preview-assets/clarity-offscreen-review.png)
 
@@ -264,7 +268,7 @@ The five theme previews below are retained from the 1.10.2 review. They render p
 - Your own compatible emulator to open game files.
 - Enough free space in your selected download and extraction folders.
 
-This repository distributes the Windows edition. ARM64 builds have not been qualified. The published 1.10.2 build uses debrid for torrent entries; the 1.11.2 review candidate includes a native Windows torrent route. Source availability, account permissions and download access depend on the external service and, for torrents, available peers.
+This repository distributes the Windows edition. ARM64 builds have not been qualified. The published 1.10.2 build uses debrid for torrent entries; the 1.11.3 review candidate includes a native Windows torrent route. Source availability, account permissions and download access depend on the external service and, for torrents, available peers.
 
 NOMROM does not bundle games, BIOS files or an emulator. Use it with content you are authorized to access.
 
