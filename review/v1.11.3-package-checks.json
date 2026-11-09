@@ -1,0 +1,25 @@
+{
+  "version": "1.11.3+32",
+  "compiledSourceMatches": true,
+  "sourceSha256": "11baefc8804a1b6f1826015d0f0a84c1dab1e22e3025360fc05aabe08ff50434",
+  "publicKeyMatchesCompiledApp": true,
+  "publicKeySha256": "3f50e74b3dbf3db88202fa3eb2fe75dede5c2a7ed5452cbd5aa57014ecc401fd",
+  "publicOnlySignatureVerification": "passed",
+  "tamperedPayloadRejected": true,
+  "payloadManifestEntriesVerified": 33,
+  "artifacts": [
+    {
+      "kind": "installer",
+      "name": "NOMROM-1.11.3-windows-x64-setup.exe",
+      "bytes": 14111110,
+      "sha256": "b3e8a70ff9773f404e456f6e1a8a2e354902d4fef6ea75952dc03f255cd94aab"
+    },
+    {
+      "kind": "portable",
+      "name": "NOMROM-1.11.3-windows-x64-portable.zip",
+      "bytes": 17050994,
+      "sha256": "c3e88b9eccaa4c117d37921dd76b91d8b3e874ae444b72248cfd9203e2dc8ef3"
+    }
+  ],
+  "releaseStatus": "Local review only; no new release/feed uploaded"
+}

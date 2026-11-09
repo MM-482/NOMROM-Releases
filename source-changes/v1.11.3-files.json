@@ -1,0 +1,97 @@
+{
+  "candidateVersion": "1.11.3+32",
+  "baselineSourceArchive": {
+    "name": "NOMROM-1.11.2-Source.zip",
+    "sha256": "a55d3659ca35a33c822b4a094793ae0819e6834ede1597254daf493a57547db5"
+  },
+  "patch": {
+    "path": "source-changes/v1.11.3-download-safety.patch",
+    "format": "git diff --binary --full-index",
+    "bytes": 65800,
+    "sha256": "74197de7fe6aac6dbaa4818bd5b6e2395628bb6e50739710386f69bfcfd2af46",
+    "files": 8
+  },
+  "verification": {
+    "gitApplyCheck": "passed",
+    "gitApplyIndex": "passed",
+    "byteIdenticalCandidateFiles": 8,
+    "byteIdenticalRuntimeAndTestFiles": 5,
+    "checkoutNote": "Applied to the original source after normal Git text checkout; per-file checkout line endings reproduce the candidate bytes.",
+    "checkoutLineEndings": {
+      "AGENTS.md": "LF",
+      "README.md": "LF",
+      "pubspec.yaml": "CRLF",
+      "lib/services/download_service.dart": "LF",
+      "lib/services/extraction_receipt_store.dart": "LF",
+      "test/download_extraction_reuse_test.dart": "LF",
+      "test/download_torrent_finalization_test.dart": "CRLF",
+      "test/extraction_receipt_test.dart": "LF"
+    }
+  },
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "change": "modified",
+      "beforeSha256": "e2de60d407da536c0784c7f1b31d080f5f0fbe34b3361c7c77c3094d8522a007",
+      "afterSha256": "338dcaa5ef0a5abbd93cc3fcf343115244880abf708180d8291ce918a2bf98cc",
+      "beforeBytes": 4971,
+      "afterBytes": 4971
+    },
+    {
+      "path": "README.md",
+      "change": "modified",
+      "beforeSha256": "dd3b1319dae7f1f15075dcbb2534802738fff0fbc905c40cf502e42b20109bd0",
+      "afterSha256": "3254cb54946faf9505894f5f037305e35359529fcea983385770fe90fb67d76f",
+      "beforeBytes": 11756,
+      "afterBytes": 12252
+    },
+    {
+      "path": "pubspec.yaml",
+      "change": "modified",
+      "beforeSha256": "7fdac304a5dfd1d521d5db7747e9e546f829cc21ba7bc8c0ee048096a1fed642",
+      "afterSha256": "3f565fee5c709728e0858e64131398e1630b6c9ea3248004d7b2ade4387683d9",
+      "beforeBytes": 2823,
+      "afterBytes": 2823
+    },
+    {
+      "path": "lib/services/download_service.dart",
+      "change": "modified",
+      "beforeSha256": "bd00aac33d66a26a69d7070ef2f190874db125dd288c8e973cbdbc0ec737e450",
+      "afterSha256": "9b3ade51c4404af620592224288319eeba4df171abbfe51b450d9b8f357e7c67",
+      "beforeBytes": 121067,
+      "afterBytes": 127273
+    },
+    {
+      "path": "lib/services/extraction_receipt_store.dart",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "946ef9d2345a8759a47621f018a05857e281bcad13f0102aca72c8253edc460d",
+      "beforeBytes": null,
+      "afterBytes": 7246
+    },
+    {
+      "path": "test/download_extraction_reuse_test.dart",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "1a22b1c5610ccb025b1a86edeabcce417fb93466b018e76b367045e30306e553",
+      "beforeBytes": null,
+      "afterBytes": 6855
+    },
+    {
+      "path": "test/download_torrent_finalization_test.dart",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "3d7b96b000749b79d388d5e88deabf2594301bbe5f325092216d22ad295f2d75",
+      "beforeBytes": null,
+      "afterBytes": 17371
+    },
+    {
+      "path": "test/extraction_receipt_test.dart",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "0ed2b8947798d6bcbf2847a8a602fcb4dca018f246cb0519282720206ad758e7",
+      "beforeBytes": null,
+      "afterBytes": 5353
+    }
+  ]
+}
