@@ -1,0 +1,143 @@
+{
+  "currentVersionUnderTest": "1.10.2+23",
+  "offeredVersion": "1.11.3+32",
+  "directUpgradeSupported": true,
+  "intermediateVersionRequired": false,
+  "publishedOriginalArtifacts": {
+    "portableZipSha256": "310678d74afc9d7cd7754d76ab807fc494a58a0343f7bd31b2ba19261f9fc7c4",
+    "sourceZipSha256": "ad13561aa0e7f6796c9b107d88c641b3c4c92f280a4104e41f18d7eaf4356756",
+    "hashesMatchedGitHubAssetDigests": true
+  },
+  "originalCompiledUpdater": {
+    "configured": true,
+    "url": "https://github.com/MM-482/NOMROM-Releases/releases/latest/download/windows-stable.json",
+    "keyId": "nomrom-windows-2026",
+    "publicKeySha256": "3f50e74b3dbf3db88202fa3eb2fe75dede5c2a7ed5452cbd5aa57014ecc401fd",
+    "algorithm": "rsa-pss-sha256",
+    "channel": "stable",
+    "provenance": "Publisher-supplied public configuration; signing key is not part of the application."
+  },
+  "unchangedUpdaterFiles": [
+    {
+      "path": "lib/services/windows_update_service.dart",
+      "sha256": "67634d55d6870e36df3fcf4588ca82822f4b4f853ed3a13c368ece2348ad26a3",
+      "identicalBetweenPublishedVersions": true
+    },
+    {
+      "path": "lib/providers/windows_update_provider.dart",
+      "sha256": "ceedecc63953db6ad5d631f9dda23455cd83ab0001b5de4c7633952a9a97eae6",
+      "identicalBetweenPublishedVersions": true
+    },
+    {
+      "path": "lib/widgets/windows_update_tile.dart",
+      "sha256": "9884d5e4fac8526f20a94733af868ab00c6df39629134602a1b62651ee83d97d",
+      "identicalBetweenPublishedVersions": true
+    },
+    {
+      "path": "windows/runner/update_launcher.cpp",
+      "sha256": "7e27cc4ceb3adcd96b4708e47de4680bfea8b060e3fcb673ab246b8cafed9758",
+      "identicalBetweenPublishedVersions": true
+    }
+  ],
+  "liveFeed": {
+    "url": "https://github.com/MM-482/NOMROM-Releases/releases/latest/download/windows-stable.json",
+    "offeredVersion": "1.11.3+32",
+    "sha256": "d191d8bb58f4d5ded4da58f42929c420d7b5082e429d1a240a4ce973ed8a2b3e",
+    "normalAndNoCacheRequestsMatched": true,
+    "note": "An initial request during publication still received the valid old feed; subsequent normal requests and final original-client tests resolved the new release without a client change."
+  },
+  "nativeVerification": {
+    "implementation": "Compiled exact original published 1.10.2 update_launcher.cpp in its supported crypto-only probe mode",
+    "realPublisherSignature": "passed",
+    "alteredPayloadRejected": true,
+    "alteredSignatureRejected": true,
+    "alteredPublicKeyRejected": true,
+    "installerAndPortableSizeSha256": "passed",
+    "incorrectSizeAndHashRejected": true,
+    "verifiedFileCannotBeOpenedForWrite": true,
+    "installerExecuted": false
+  },
+  "functionalRun": {
+    "runner": "Official Flutter test runner; Windows x64; exact original 1.10.2 production updater tile/notifier/service",
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "durationMilliseconds": 7335,
+    "usesLivePublishedGitHubFeedAndDownloads": true,
+    "usesOriginalNativeCngVerification": true,
+    "modeAndStagingEnvironment": "Controlled installed and portable environments in an isolated widget harness",
+    "observations": [
+      {
+        "mode": "installed",
+        "live": true,
+        "currentVersion": "1.10.2+23",
+        "offeredVersion": "1.11.3+32",
+        "download": "NOMROM-1.11.3-windows-x64-setup.exe",
+        "downloadedBytes": 14111110,
+        "expectedSha256": "b3e8a70ff9773f404e456f6e1a8a2e354902d4fef6ea75952dc03f255cd94aab",
+        "signatureVerifiedBy": "original 1.10.2 native CNG implementation",
+        "signatureChecks": 1,
+        "packageChecks": 2,
+        "installConfirmationDialogChecked": true,
+        "installDispatchCheckedThroughOriginalNotifier": true,
+        "installerDispatchesIntercepted": 1,
+        "portableRevealDispatchesIntercepted": 0,
+        "installerExecuted": false
+      },
+      {
+        "mode": "portable",
+        "live": true,
+        "currentVersion": "1.10.2+23",
+        "offeredVersion": "1.11.3+32",
+        "download": "NOMROM-1.11.3-windows-x64-portable.zip",
+        "downloadedBytes": 17050994,
+        "expectedSha256": "c3e88b9eccaa4c117d37921dd76b91d8b3e874ae444b72248cfd9203e2dc8ef3",
+        "signatureVerifiedBy": "original 1.10.2 native CNG implementation",
+        "signatureChecks": 1,
+        "packageChecks": 1,
+        "installConfirmationDialogChecked": false,
+        "installDispatchCheckedThroughOriginalNotifier": false,
+        "installerDispatchesIntercepted": 0,
+        "portableRevealDispatchesIntercepted": 1,
+        "installerExecuted": false
+      }
+    ],
+    "rawRunSha256": "0f8b818c7931c8a5568d9a8d6dfbbbc573f2f64b24fc2bd22b5663f903109fdb"
+  },
+  "installerIdentity": {
+    "appId": "com.markmateo.nomrom.Windows",
+    "defaultDirectory": "per-user LocalAppData/Programs/NOMROM",
+    "sameInOldAndNewInstallerSource": true,
+    "nativeInstalledClassification": "The running executable directory must match its per-user Inno InstallLocation."
+  },
+  "screenshots": [
+    {
+      "file": "live-installed-available.png",
+      "sha256": "776d7106f7442c75da3f58ef488d5612405551532667bca230e26e729a55e495",
+      "kind": "Original production 1.10.2 widgets in an isolated harness, not a screenshot of the installed executable"
+    },
+    {
+      "file": "live-installed-verified.png",
+      "sha256": "6abce42d3744bb4a2dfbd2a545026864ede963ebb0d20cb1463f54304f8ab73c",
+      "kind": "Original production 1.10.2 widgets in an isolated harness, not a screenshot of the installed executable"
+    },
+    {
+      "file": "live-portable-available.png",
+      "sha256": "8164ef253f114051e21a7af4741dcd4ba583b29b78effca249c153492fb1eafd",
+      "kind": "Original production 1.10.2 widgets in an isolated harness, not a screenshot of the installed executable"
+    },
+    {
+      "file": "live-portable-verified.png",
+      "sha256": "4b21cd66528f0108dd7a643c1a14fe6755a68feb5ae86cf2a08cd7141a1cace9",
+      "kind": "Original production 1.10.2 widgets in an isolated harness, not a screenshot of the installed executable"
+    }
+  ],
+  "boundaries": [
+    "No old full app was launched against user settings or databases.",
+    "The actual installer/CreateProcess boundary was intercepted; no installer or in-place upgrade was executed.",
+    "UI confirmation dialog was checked; original notifier/service install dispatch was separately invoked in real async.",
+    "Current installed-app classification should use the actual running app; a shell registry observation was not used to classify it.",
+    "No product source, user registration, accounts, libraries or downloaded games were changed."
+  ]
+}

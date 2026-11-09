@@ -207,7 +207,7 @@ The current installer does not have a Windows publisher certificate, so Windows 
 
 Open **Settings → App updates → Check for updates**.
 
-**Coming from 1.10.2? You can update directly to 1.11.3.** The published 1.10.2 updater uses the same signed feed and trusted publisher key; no intermediate release is needed. Installed copies use the installer. Portable copies use a verified ZIP and manual replacement of the whole app folder.
+**Coming from 1.10.2? You can update directly to 1.11.3.** The published 1.10.2 updater uses the same signed feed and trusted publisher key; no intermediate release is needed. Installed copies use the installer. Portable copies use a verified ZIP and manual replacement of the whole app folder. The original 1.10.2 update controls have been checked against the live 1.11.3 feed and downloads in both modes. [See the verification record](review/v1.11.3-updater-verification.md).
 
 For an installed copy, download the update and choose **Install and restart**. NOMROM saves and pauses downloads, closes, and opens the setup wizard. Finish setup to reopen the app. Your settings, library records and downloaded game files stay in their existing locations. Resume paused downloads after reopening.
 
