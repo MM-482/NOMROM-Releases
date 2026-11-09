@@ -1,36 +1,49 @@
 {
   "version": "1.11.3+32",
-  "status": "prepared locally for publisher review; no new release uploaded",
+  "status": "Release assets for v1.11.3",
+  "releaseUrl": "https://github.com/MM-482/NOMROM-Releases/releases/tag/v1.11.3",
   "files": [
     {
-      "name": "NOMROM-1.11.3-source-SHA256.txt",
-      "bytes": 92,
-      "sha256": "912d9bf08fbdf6ba57e12b80dd62be28fc81b6f929480d2f2cf79d635e4b30c3"
-    },
-    {
-      "name": "NOMROM-1.11.3-Source.zip",
-      "bytes": 6833546,
-      "sha256": "87073d0bee7ffd90af25192f2fafa32be5c34224d77c2686de0ecd6f5d6f6265"
+      "name": "NOMROM-1.11.3-windows-x64-setup.exe",
+      "bytes": 14111110,
+      "sha256": "b3e8a70ff9773f404e456f6e1a8a2e354902d4fef6ea75952dc03f255cd94aab",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/NOMROM-1.11.3-windows-x64-setup.exe"
     },
     {
       "name": "NOMROM-1.11.3-windows-x64-portable.zip",
       "bytes": 17050994,
-      "sha256": "c3e88b9eccaa4c117d37921dd76b91d8b3e874ae444b72248cfd9203e2dc8ef3"
-    },
-    {
-      "name": "NOMROM-1.11.3-windows-x64-setup.exe",
-      "bytes": 14111110,
-      "sha256": "b3e8a70ff9773f404e456f6e1a8a2e354902d4fef6ea75952dc03f255cd94aab"
+      "sha256": "c3e88b9eccaa4c117d37921dd76b91d8b3e874ae444b72248cfd9203e2dc8ef3",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/NOMROM-1.11.3-windows-x64-portable.zip"
     },
     {
       "name": "NOMROM-1.11.3-windows-x64-SHA256.txt",
       "bytes": 209,
-      "sha256": "71e30ed271b28c1ae869a356e4a965296b6ab500a07383ed507bca17be3eeaba"
+      "sha256": "71e30ed271b28c1ae869a356e4a965296b6ab500a07383ed507bca17be3eeaba",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/NOMROM-1.11.3-windows-x64-SHA256.txt"
+    },
+    {
+      "name": "NOMROM-1.11.3-Source.zip",
+      "bytes": 6833546,
+      "sha256": "87073d0bee7ffd90af25192f2fafa32be5c34224d77c2686de0ecd6f5d6f6265",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/NOMROM-1.11.3-Source.zip"
+    },
+    {
+      "name": "NOMROM-1.11.3-source-SHA256.txt",
+      "bytes": 92,
+      "sha256": "912d9bf08fbdf6ba57e12b80dd62be28fc81b6f929480d2f2cf79d635e4b30c3",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/NOMROM-1.11.3-source-SHA256.txt"
     },
     {
       "name": "windows-stable.json",
-      "bytes": 3130,
-      "sha256": "6d4a7b4c67d96bb713fbe93fbbcae653d94e3acc636db81424c82a1c266020b9"
+      "bytes": 3314,
+      "sha256": "d191d8bb58f4d5ded4da58f42929c420d7b5082e429d1a240a4ce973ed8a2b3e",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/windows-stable.json"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "bytes": 591,
+      "sha256": "b578e51c792064e77aa9a8999cdd9b7e99f7d624b4d234d5e58fa319fc8ad5b5",
+      "url": "https://github.com/MM-482/NOMROM-Releases/releases/download/v1.11.3/SHA256SUMS.txt"
     }
   ]
 }
